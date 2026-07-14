@@ -1,0 +1,41 @@
+{
+  "name": "plumbing_test_fakedecoys",
+  "n_actives": 10,
+  "n_decoys": 200,
+  "metrics": {
+    "auc": 0.9495,
+    "bedroc": 0.7562949670579081,
+    "ef_1pct": 21.0,
+    "ef_5pct": 11.454545454545455,
+    "ef_10pct": 8.0
+  },
+  "score_statistics": {
+    "actives": {
+      "n": 10,
+      "mean": -9.41385,
+      "median": -9.3833,
+      "std": 1.2563591783403343,
+      "min": -11.4351,
+      "max": -7.032
+    },
+    "decoys": {
+      "n": 200,
+      "mean": -6.455322499999999,
+      "median": -6.3945,
+      "std": 1.239077320863854,
+      "min": -9.4377,
+      "max": -3.6283
+    },
+    "mannwhitney": {
+      "u": 101.0,
+      "p_value": 1.6571221314398495e-06,
+      "alternative": "two-sided"
+    }
+  },
+  "ef_fractions": [
+    0.01,
+    0.05,
+    0.1
+  ],
+  "bedroc_alpha": 20.0
+}

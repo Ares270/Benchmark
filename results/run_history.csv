@@ -1,0 +1,2 @@
+timestamp,name,n_actives,n_decoys,auc,ef1,ef5,outdir
+2026-07-09_101234,plumbing_test_fakedecoys,10,200,0.9495,21.0,11.455,/home/ares/projects/Benchmark/results/plumbing_test_fakedecoys_2026-07-09_101234
