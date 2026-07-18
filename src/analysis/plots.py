@@ -26,6 +26,7 @@ from plotly.subplots import make_subplots
 from scipy.stats import gaussian_kde
 
 from . import config, metrics
+from .chemistry import PROPERTY_COLUMNS, PROPERTY_LABELS, PROPERTY_SPECS
 
 _FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
@@ -333,5 +334,306 @@ def comparison_bar_interactive(table: pd.DataFrame, metrics_to_plot=("auc", "bed
     fig.update_layout(
         template=config.PLOTLY_TEMPLATE, title=dict(text="Method comparison", x=0.5),
         font=dict(family=_FONT_STACK, size=12), margin=dict(l=50, r=20, t=70, b=90),
+    )
+    return fig
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##### static property distributions #####
+
+def chemical_distributions_static(frame: pd.DataFrame) -> plt.Figure:
+    """Small multiples keep unlike descriptor units on honest separate axes."""         # Creates a 3×4 grid: one panel for each property.
+                                                                                        # Each property gets its own axis
+    with _mpl_style():  
+        fig, axes = plt.subplots(3, 4, figsize=(10.5, 7.6))
+        for ax, (column, label, _) in zip(axes.flat, PROPERTY_SPECS):
+            groups = [
+                frame.loc[frame["cohort"].eq(cohort), column].to_numpy(float)
+                for cohort in ("decoys", "actives")
+            ]
+            parts = ax.boxplot(
+                groups, patch_artist=True, showfliers=False, widths=0.55                # showfliers=False to prevent outliers from skewing the y-axis scale
+            )
+            for box, color in zip(
+                parts["boxes"], (config.COLOR_DECOY, config.COLOR_ACTIVE)
+            ):
+                box.set_facecolor(color)
+                box.set_alpha(0.45)
+            for median in parts["medians"]:
+                median.set_color(config.COLOR_NEUTRAL)
+            ax.set_xticks((1, 2))
+            ax.set_xticklabels(("decoys", "actives"), rotation=15)
+            ax.set_title(label)
+        for ax in axes.flat[len(PROPERTY_SPECS):]:
+            ax.set_visible(False)
+        fig.suptitle("Evaluated-parent property distributions", fontsize=11)
+        fig.tight_layout()
+    return fig
+
+
+
+
+
+###### Interactive property distributions ##### 
+
+def chemical_distributions_interactive(frame: pd.DataFrame) -> go.Figure:
+    fig = make_subplots(
+        rows=3,
+        cols=4,
+        subplot_titles=[spec[1] for spec in PROPERTY_SPECS],
+    )
+    for index, (column, _, _) in enumerate(PROPERTY_SPECS):
+        row, col = divmod(index, 4)
+        for cohort, color in (
+            ("decoys", config.COLOR_DECOY),
+            ("actives", config.COLOR_ACTIVE),
+        ):
+            subset = frame.loc[frame["cohort"].eq(cohort)]
+            fig.add_trace(
+                go.Violin(                     # Creates interactive violin distributions with a visible box and mean.
+                    y=subset[column],          # individual dots are not shown to avoid clutter
+                    name=cohort,               # imagine having 100000s of points, it would be a mess
+                    legendgroup=cohort,
+                    showlegend=index == 0,
+                    line_color=color,
+                    box_visible=True,
+                    meanline_visible=True,
+                    points=False,
+                    opacity=0.65,
+                    hovertemplate=f"{cohort}<br>{column} %{{y:.4g}}<extra></extra>",
+                ),
+                row=row + 1,
+                col=col + 1,
+            )
+    fig.update_layout(
+        template=config.PLOTLY_TEMPLATE,
+        title=dict(text="Evaluated-parent property distributions", x=0.5),
+        font=dict(family=_FONT_STACK, size=11),
+        height=820,
+        margin=dict(l=45, r=25, t=80, b=45),
+        violinmode="group",
+    )
+    return fig
+
+
+
+
+
+
+
+
+####### all-molecule chemical landscape ########
+
+def chemical_landscape_static(frame: pd.DataFrame) -> plt.Figure:
+    """Every accepted parent appears once in MW/cLogP chemical space."""
+
+    with _mpl_style():
+        fig, ax = plt.subplots(figsize=(5.8, 4.2))
+        for cohort, color in (
+            ("decoys", config.COLOR_DECOY),
+            ("actives", config.COLOR_ACTIVE),
+        ):                                                                  # Every accepted parent is one point
+            subset = frame.loc[frame["cohort"].eq(cohort)]                  # in the MW/cLogP chemical space, colored by cohort.
+            ax.scatter(                                                     # hovering over a point shows the molecule_id 
+                subset["molecular_weight"],                                 # and all other properties for that molecule.
+                subset["clogp"],
+                s=7,
+                color=color,
+                alpha=0.45,
+                edgecolors="none",
+                rasterized=True,
+                label=cohort,
+            )
+        ax.set(
+            xlabel=PROPERTY_LABELS["molecular_weight"],
+            ylabel=PROPERTY_LABELS["clogp"],
+            title="Evaluated-parent chemical landscape",
+        )
+        ax.legend(frameon=False)
+        fig.tight_layout()
+    return fig
+
+
+
+
+
+
+
+
+
+
+
+
+####### this is the interactive version of the chemical landscape plot, which allows users to hover over points to see detailed information about each molecule.
+
+def chemical_landscape_interactive(frame: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    hover_columns = (
+        "molecule_id",
+        "tpsa_a2",
+        "qed",
+        "sa_score",
+        "hbond_donors",
+        "hbond_acceptors",
+        "rotatable_bonds",
+    )
+    for cohort, color in (
+        ("decoys", config.COLOR_DECOY),
+        ("actives", config.COLOR_ACTIVE),
+    ):
+        subset = frame.loc[frame["cohort"].eq(cohort)]
+        customdata = subset.loc[:, hover_columns].to_numpy()
+        fig.add_trace(
+            go.Scattergl(
+                x=subset["molecular_weight"],
+                y=subset["clogp"],
+                mode="markers",
+                name=cohort,
+                marker=dict(color=color, size=6, opacity=0.55),
+                customdata=customdata,
+                hovertemplate=(
+                    "%{customdata[0]}<br>MW %{x:.2f} Da<br>cLogP %{y:.3f}"
+                    "<br>TPSA %{customdata[1]:.2f} Å²"
+                    "<br>QED %{customdata[2]:.3f}"
+                    "<br>SA %{customdata[3]:.3f}"
+                    "<br>HBD/HBA %{customdata[4]:.0f}/%{customdata[5]:.0f}"
+                    "<br>rotatable bonds %{customdata[6]:.0f}<extra></extra>"
+                ),
+            )
+        )
+    return _style_plotly(
+        fig,
+        "Evaluated-parent chemical landscape",
+        PROPERTY_LABELS["molecular_weight"],
+        PROPERTY_LABELS["clogp"],
+    )
+
+
+
+
+
+
+
+
+###########    score–property correlation heatmap    ############
+
+
+def _correlation_matrix(profile: dict) -> np.ndarray:
+    return np.asarray(
+        [
+            [
+                np.nan
+                if profile["score_property_spearman"][cohort]["rho"][column]            # Builds a two-row matrix:
+                is None                                                                 # with one row for decoys and one row for actives, and one column for each property.
+                else profile["score_property_spearman"][cohort]["rho"][column]
+                for column in PROPERTY_COLUMNS
+            ]
+            for cohort in ("decoys", "actives")
+        ],
+        dtype=float,
+    )
+
+
+def chemical_correlations_static(profile: dict) -> plt.Figure:
+    matrix = _correlation_matrix(profile)
+    with _mpl_style():
+        fig, ax = plt.subplots(figsize=(8.8, 2.5))
+        image = ax.imshow(matrix, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
+        ax.set_xticks(range(len(PROPERTY_COLUMNS)))
+        ax.set_xticklabels(
+            [PROPERTY_LABELS[column] for column in PROPERTY_COLUMNS],
+            rotation=40,
+            ha="right",
+        )
+        ax.set_yticks((0, 1))
+        ax.set_yticklabels(("decoys", "actives"))
+        ax.set_title("Spearman correlation: docking score vs property")
+        fig.colorbar(image, ax=ax, label="Spearman ρ", shrink=0.8)
+        fig.tight_layout()
+    return fig
+
+
+def chemical_correlations_interactive(profile: dict) -> go.Figure:
+    matrix = _correlation_matrix(profile)
+    fig = go.Figure(
+        go.Heatmap(
+            z=matrix,
+            x=[PROPERTY_LABELS[column] for column in PROPERTY_COLUMNS],
+            y=["decoys", "actives"],
+            zmin=-1,
+            zmax=1,
+            colorscale="RdBu",
+            reversescale=True,
+            colorbar=dict(title="ρ"),
+            hovertemplate="%{y}<br>%{x}<br>Spearman ρ %{z:.3f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        template=config.PLOTLY_TEMPLATE,
+        title=dict(text="Docking score vs molecular property", x=0.5),
+        font=dict(family=_FONT_STACK, size=12),
+        margin=dict(l=80, r=30, t=65, b=120),
+    )
+    return fig
+
+
+
+
+
+
+
+
+
+
+
+####### this compares the mean values of various molecular properties between different methods. ########
+
+def chemical_mean_comparison_interactive(table: pd.DataFrame) -> go.Figure:
+    columns = [column for column in PROPERTY_COLUMNS if column in table.columns]
+    fig = make_subplots(
+        rows=3,
+        cols=4,
+        subplot_titles=[PROPERTY_LABELS[column] for column in columns],
+    )
+    colors = [
+        config.METHOD_PALETTE[index % len(config.METHOD_PALETTE)]
+        for index in range(len(table))
+    ]
+    for index, column in enumerate(columns):
+        row, col = divmod(index, 4)
+        fig.add_trace(
+            go.Bar(
+                x=[str(value) for value in table.index],                    #  Each method is represented by a different color, 
+                y=table[column].astype(float),                              # and the height of each bar corresponds to the mean value of the property for that method.
+                marker_color=colors,
+                showlegend=False,
+                hovertemplate="%{x}<br>mean %{y:.4g}<extra></extra>",
+            ),
+            row=row + 1,
+            col=col + 1,
+        )
+        fig.update_xaxes(tickangle=-30, row=row + 1, col=col + 1)
+    fig.update_layout(
+        template=config.PLOTLY_TEMPLATE,
+        title=dict(text="Mean evaluated-parent properties by method", x=0.5),
+        font=dict(family=_FONT_STACK, size=11),
+        height=820,
+        margin=dict(l=45, r=25, t=80, b=100),
     )
     return fig

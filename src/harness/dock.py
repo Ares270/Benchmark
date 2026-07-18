@@ -19,14 +19,15 @@ import argparse
 import csv
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
-    from . import config
+    from . import config, runtime
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-    from src.harness import config
+    from src.harness import config, runtime
 
 
 
@@ -112,8 +113,16 @@ def dock_one(ligand_pdbqt: Path, pose_out: Path) -> tuple[str, float | None, str
 
 def dock_batch(ligand_dir: Path, out_dir: Path, scores_csv: Path,         # 4 Inputs
                workers: int) -> dict[str, int]:                           # Dictionary Output
-                                          
+
+    started = time.perf_counter()                   # extra timing module for 
+    ligand_dir = Path(ligand_dir)                   # for computational cost records
+    out_dir = Path(out_dir)
+    scores_csv = Path(scores_csv)
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+
     out_dir.mkdir(parents=True, exist_ok=True)                            # Make Output Dir
+    scores_csv.parent.mkdir(parents=True, exist_ok=True)
 
 
 
@@ -165,6 +174,60 @@ def dock_batch(ligand_dir: Path, out_dir: Path, scores_csv: Path,         # 4 In
     print(f"Wrote scores to {scores_csv}")
 
     summary = {"total": len(ligands), **counts}
+    stage_timing = runtime.timing_record(
+        started,
+        attempted_tasks=len(ligands),
+        workers=workers,
+        cpu_slots_per_task=config.SMINA_CPU,
+    )
+    stage_timing["fresh_successes_per_wall_second"] = (
+        counts["ok"] / stage_timing["wall_seconds"]
+        if stage_timing["wall_seconds"]
+        else None
+    )
+    preparation_summary = ligand_dir / "_prep_summary.json"
+    receptor_record = (
+        runtime.file_record(config.RECEPTOR_PDBQT)
+        if config.RECEPTOR_PDBQT.is_file()
+        else {
+            "path": str(config.RECEPTOR_PDBQT.resolve()),
+            "missing": True,
+        }
+    )
+    cost_summary = {
+        "schema_version": runtime.RUNTIME_SCHEMA_VERSION,
+        "stage": "smina_docking",
+        "inputs": {
+            "ligand_pdbqt": runtime.file_set_record(ligands),
+            "receptor_pdbqt": receptor_record,
+            "preparation_summary": (
+                runtime.file_record(preparation_summary)
+                if preparation_summary.is_file()
+                else None
+            ),
+        },
+        "outputs": {
+            "scores_csv": runtime.file_record(scores_csv),
+            "pose_pdbqt": runtime.file_set_record(
+                sorted(out_dir.glob("*_out.pdbqt"))
+            ),
+        },
+        "counts": summary,
+        "parameters": {
+            "workers": workers,
+            "smina_cpu_per_job": config.SMINA_CPU,
+            "box_center_a": list(config.BOX_CENTER),
+            "box_size_a": list(config.BOX_SIZE),
+            "exhaustiveness": config.EXHAUSTIVENESS,
+            "seed": config.SEED,
+            "num_modes": config.NUM_MODES,
+            "energy_range_kcal_mol": config.ENERGY_RANGE,
+            "timeout_seconds_per_ligand": config.DOCK_TIMEOUT_S,
+        },
+        "timing": stage_timing,
+        "hardware": runtime.hardware_record(),
+    }
+    runtime.write_json_atomic(out_dir / "_dock_summary.json", cost_summary)
     print(f"Done: {summary}")
     return summary
 

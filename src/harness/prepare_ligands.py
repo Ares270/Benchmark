@@ -22,6 +22,7 @@ import argparse
 import csv
 import re
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -35,10 +36,10 @@ from meeko import MoleculePreparation, PDBQTWriterLegacy
 
 
 try:                                         # run bare or module (module better)
-    from . import config
+    from . import config, runtime
 except ImportError:                          # run as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-    from src.harness import config
+    from src.harness import config, runtime
 RDLogger.DisableLog("rdApp.*")               #disable annoying log
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]")       # Characters allowed in an output filename; everything else -> underscore.
@@ -131,6 +132,12 @@ def read_smi(path: Path) -> list[tuple[str, str]]:                       # must 
 ##### Boss ######
 
 def prepare_batch(smi_path: Path, out_dir: Path, workers: int) -> dict[str, int]:
+    started = time.perf_counter()                           
+    smi_path = Path(smi_path)                              # New block starts time 
+    out_dir = Path(out_dir)                                # normalize paths
+    if workers < 1:                                        # reject 0 workers, because that would be a waste of time, and a waste of electricity, and a waste of money, and a waste of life
+        raise ValueError("workers must be at least 1")
+
     out_dir.mkdir(parents=True, exist_ok=True)                                      # make directory and stfu if it exists
     pairs = read_smi(smi_path)
     print(f"Read {len(pairs)} molecules from {smi_path}")
@@ -180,6 +187,42 @@ def prepare_batch(smi_path: Path, out_dir: Path, workers: int) -> dict[str, int]
 
     summary = {"total": len(pairs), "skipped": skipped,
                "prepared": n_ok, "failed": len(failures)}
+    prepared_files = sorted(out_dir.glob("*.pdbqt"))                ####### EXTRA MODULE #######
+    failure_manifest = out_dir / "_prep_failures.csv"                   # for writing _prep_summary.json
+    cost_summary = {
+        "schema_version": runtime.RUNTIME_SCHEMA_VERSION,
+        "stage": "ligand_preparation",
+        "input": {
+            "smiles": runtime.file_record(smi_path),
+        },
+        "outputs": {
+            "prepared_pdbqt": runtime.file_set_record(prepared_files),
+            "failures_csv": (
+                runtime.file_record(failure_manifest)
+                if failure_manifest.is_file()
+                else None
+            ),
+        },
+        "counts": {
+            **summary,
+            "attempted_this_invocation": len(tasks),
+            "successful_pdbqt_available": len(prepared_files),
+        },
+        "parameters": {
+            "workers": workers,
+            "embed_method": "RDKit ETKDGv3",
+            "embed_seed": config.EMBED_SEED,
+            "optimization": "MMFF94 when parameterized, otherwise UFF",
+            "rigid_macrocycles": config.RIGID_MACROCYCLES,
+        },
+        "timing": runtime.timing_record(
+            started,
+            attempted_tasks=len(tasks),
+            workers=workers,
+        ),
+        "hardware": runtime.hardware_record(),
+    }
+    runtime.write_json_atomic(out_dir / "_prep_summary.json", cost_summary)
     print(f"Done: {summary}")
     return summary
 

@@ -58,4 +58,4 @@ REPORT_NAME = "report.html"
 METRICS_NAME = "metrics.json"
 RUN_LOG_NAME = "run_log.json"
 RUN_HISTORY_NAME = "run_history.csv"
-OUTPUT_SCHEMA_VERSION = 2
+OUTPUT_SCHEMA_VERSION = 3

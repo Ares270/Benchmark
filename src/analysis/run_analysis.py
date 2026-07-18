@@ -26,7 +26,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import config, metrics, plots, provenance, report
+from . import chemistry, config, metrics, plots, provenance, report
 from .dataset import AnalysisInputError, build_dataset
 
 
@@ -47,6 +47,33 @@ def _write_text_atomic(path: Path, text: str) -> None:
 def _json_text(value: dict) -> str:
     return json.dumps(value, indent=2, allow_nan=False) + "\n"          # Fail Loud 
 
+
+
+def _load_docking_cost(scores_path: Path) -> tuple[dict | None, Path | None]:           # new    
+    """Load a sibling docking summary only when it matches this score file."""          # looks beside a score file for
+                                                                                        # _dock_summary.json
+    summary_path = Path(scores_path).parent / "_dock_summary.json"
+    if not summary_path.is_file():
+        return None, None
+    try:
+        record = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        raise AnalysisInputError(
+            f"Cannot read docking cost summary {summary_path}: {error}"
+        ) from error
+    if record.get("stage") != "smina_docking":
+        raise AnalysisInputError(f"{summary_path} is not a Smina docking summary")
+    recorded_hash = (
+        record.get("outputs", {})
+        .get("scores_csv", {})
+        .get("sha256")
+    )
+    actual_hash = provenance.file_record(scores_path)["sha256"]
+    if not recorded_hash or recorded_hash != actual_hash:
+        raise AnalysisInputError(
+            f"{summary_path} does not match the analyzed scores file {scores_path}"
+        )
+    return record, summary_path
 
 
 
@@ -83,6 +110,8 @@ def _save_static_figures(
     frac_found,
     ef_points,
     score_direction: str,
+    chemical_frame: pd.DataFrame | None = None,     # new chemical figures
+    chemical_profile: dict | None = None,           # if the chemistry analysis is done
 ) -> None:
     factories = {
         "roc_curve": lambda: plots.roc_static(fpr, tpr, auc),
@@ -91,6 +120,18 @@ def _save_static_figures(
         "rank_plot": lambda: plots.rank_static(frame, score_direction),
         "violin_plot": lambda: plots.violin_static(active_observed, decoy_observed),
     }
+    if chemical_frame is not None and chemical_profile is not None:
+        factories.update(
+            {
+                "chemical_distributions": lambda: plots.chemical_distributions_static(
+                    chemical_frame
+                ),
+                "chemical_landscape": lambda: plots.chemical_landscape_static(chemical_frame),
+                "score_property_correlations": lambda: plots.chemical_correlations_static(
+                    chemical_profile
+                ),
+            }
+        )
     for filename, factory in factories.items():
         figure = factory()
         try:
@@ -173,6 +214,8 @@ def run(
     name: str,
     outdir: Path,
     *,
+    active_intake_path: Path | None = None,     # this change was made to allow for chemical profiling
+    decoy_intake_path: Path | None = None,
     missing_policy: str = config.MISSING_SCORE_POLICY,
     score_direction: str = config.SCORE_DIRECTION,              #Score direction comes from a single source 
     bootstrap_replicates: int = config.BOOTSTRAP_REPLICATES,
@@ -185,6 +228,11 @@ def run(
     """Validate inputs, calculate metrics, and write one immutable run directory."""
 
     started = time.monotonic()
+    if (active_intake_path is None) != (decoy_intake_path is None):
+        raise AnalysisInputError(
+            "Chemical profiling requires both active and decoy intake molecules.csv files"
+        )
+
     dataset = build_dataset(
         scores_path,
         decoy_path,
@@ -196,6 +244,14 @@ def run(
         reference_id_column=reference_id_column,
     )
     frame = dataset.frame
+    active_cost, active_cost_path = _load_docking_cost(scores_path)     ##### Lines 247–254 load active and decoy cost records when available
+    decoy_cost, decoy_cost_path = _load_docking_cost(decoy_path)
+    computational_cost = None
+    if active_cost is not None or decoy_cost is not None:
+        computational_cost = {
+            "actives": active_cost,
+            "decoys": decoy_cost,
+        }
     labels = frame["label"].to_numpy(int)
     scores = frame["score"].to_numpy(float)
 
@@ -233,6 +289,13 @@ def run(
         score_direction=score_direction,
     )
 
+    chemical_frame = None
+    chemical_profile = None
+    if active_intake_path is not None and decoy_intake_path is not None:        # If both intake files are present, 
+        chemical_frame, chemical_profile = chemistry.build_chemical_profile(    # the chemistry module validates and summarizes them
+            active_intake_path, decoy_intake_path, frame
+        )
+
     run_dir, final_dir, timestamp = _run_directories(outdir, name)
     figure_dir = run_dir / config.FIG_SUBDIR
     interactive_dir = run_dir / config.INTERACTIVE_SUBDIR
@@ -242,6 +305,8 @@ def run(
     _save_static_figures(
         figure_dir, frame, active_observed, decoy_observed,
         fpr, tpr, auc, frac_screened, frac_found, ef_points, score_direction,
+        chemical_frame=chemical_frame,
+        chemical_profile=chemical_profile,
     )
     interactive_figures = {
         "roc": plots.roc_interactive(fpr, tpr, auc),
@@ -250,6 +315,14 @@ def run(
         "rank": plots.rank_interactive(frame, score_direction),
         "violin": plots.violin_interactive(active_observed, decoy_observed),
     }
+    if chemical_frame is not None and chemical_profile is not None:
+        interactive_figures.update(
+            {
+                "chemical_distributions": plots.chemical_distributions_interactive(chemical_frame),
+                "chemical_landscape": plots.chemical_landscape_interactive(chemical_frame),
+                "score_property_correlations": plots.chemical_correlations_interactive(chemical_profile),
+            }
+        )
     for filename, figure in interactive_figures.items():
         figure.write_html(
             interactive_dir / f"{filename}.html",
@@ -266,6 +339,15 @@ def run(
     }
     if labels_path is not None:
         input_records["active_reference"] = provenance.file_record(labels_path)
+    if active_intake_path is not None and decoy_intake_path is not None:
+        input_records["active_intake"] = provenance.file_record(active_intake_path)
+        input_records["decoy_intake"] = provenance.file_record(decoy_intake_path)
+        input_records["active_intake_summary"] = provenance.file_record(active_intake_path.parent / "summary.json")
+        input_records["decoy_intake_summary"] = provenance.file_record(decoy_intake_path.parent / "summary.json")
+    if active_cost_path is not None:
+        input_records["active_docking_summary"] = provenance.file_record(active_cost_path)
+    if decoy_cost_path is not None:
+        input_records["decoy_docking_summary"] = provenance.file_record(decoy_cost_path)
     provenance_record = {
         "inputs": input_records,
         "git": provenance.git_state(repo_root),
@@ -288,6 +370,8 @@ def run(
         versions,
         dataset.audit,
         provenance_record,
+        chemistry=chemical_profile,
+        computational_cost=computational_cost,
     )
     report_path = run_dir / config.REPORT_NAME
     _write_text_atomic(report_path, html)
@@ -313,6 +397,10 @@ def run(
         "bedroc_alpha": config.BEDROC_ALPHA,
         "score_direction": score_direction,
     }
+    if chemical_profile is not None:
+        metrics_output["chemistry"] = chemical_profile
+    if computational_cost is not None:
+        metrics_output["computational_cost"] = computational_cost
     _write_text_atomic(run_dir / config.METRICS_NAME, _json_text(metrics_output))
 
     run_log = {
@@ -331,7 +419,9 @@ def run(
             "bootstrap_replicates": bootstrap_replicates,
             "bootstrap_seed": bootstrap_seed,
             "confidence_level": confidence_level,
+            "chemical_profile_enabled": chemical_profile is not None,
         },
+        "computational_cost": computational_cost,
         "dataset_audit": dataset.audit,
         "provenance": provenance_record,
         "versions": versions,
@@ -381,6 +471,18 @@ def main() -> None:
         "--active-reference", "--labels", dest="labels", type=Path, default=None,
         help="optional active-reference CSV used as a strict identity check",
     )
+    parser.add_argument(
+        "--active-intake",
+        type=Path,
+        default=None,
+        help="optional active intake molecules.csv; requires --decoy-intake",
+    )
+    parser.add_argument(
+        "--decoy-intake",
+        type=Path,
+        default=None,
+        help="optional decoy intake molecules.csv; requires --active-intake",
+    )
     parser.add_argument("--name", required=True, help="safe run identifier used in output paths")
     parser.add_argument("--outdir", type=Path, default=Path("results"))
     parser.add_argument("--id-column", default=config.ID_COLUMN)
@@ -405,6 +507,8 @@ def main() -> None:
             args.labels,
             args.name,
             args.outdir,
+            active_intake_path=args.active_intake,
+            decoy_intake_path=args.decoy_intake,
             missing_policy=args.missing_policy,
             score_direction=args.score_direction,
             bootstrap_replicates=args.bootstrap_replicates,

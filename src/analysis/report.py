@@ -18,6 +18,13 @@ PLOT_LAYOUT = [
     ("violin", "Observed score by class", "Distribution summary for finite docking scores only."),
 ]
 
+CHEMISTRY_PLOT_LAYOUT = [
+    ("chemical_distributions", "Parent-property distributions", "Each property keeps its own units and axis; QED and SA are descriptive, not filters."),
+    ("chemical_landscape", "All accepted parents in chemical space", "Every accepted parent appears once; hover over a point for TPSA, QED, SA, H-bond, and flexibility details."),
+    ("score_property_correlations", "Score–property correlations", "Spearman correlations use observed dockings only. Correlation is diagnostic of scoring bias, not evidence of causation."),
+]
+
+
 
 _TEMPLATE = Environment(autoescape=True).from_string(r"""
 <div class="report">
@@ -47,12 +54,35 @@ _TEMPLATE = Environment(autoescape=True).from_string(r"""
 {% for key in ['actives','decoys'] %}{% set group=audit[key] %}<tr><td>{{ key }}</td><td class="num">{{ group.n_input }}</td><td class="num">{{ group.n_scored }}</td><td class="num">{{ group.n_missing_score }}</td><td class="num">{{ '%.2f%%'|format(100*group.coverage) }}</td></tr>{% endfor %}</table>
 {% if audit.reference %}<p class="note">Active-reference check: {{ audit.reference.n_reference_ids }} IDs; {{ audit.reference.n_reference_ids_not_in_scored_actives }} reference actives were not present in this scored-active input. This may reflect the DUDE-Z-compatible active subset.</p>{% endif %}
 
+{% if chemistry %}                      ##### This section appears only when chemistry inputs were supplied
+<h2>Chemical-property profile</h2>      ##### It explains the exact parent policy, no tautomer/stereo enumeration, and no QED/SA filtering.
+<p class="note"><strong>Evaluated structure:</strong> the raw submitted SMILES remains in the intake audit, but descriptors and docking preparation use only the largest disconnected component. No tautomers, stereoisomers, racemates, or protonation states are enumerated; the submitted parent form is used as-is. QED and SA are descriptive outputs, never hard filters or an “overall score.”</p>
+<table class="kv"><tr><th>Cohort</th><th class="num">Submitted</th><th class="num">RDKit-valid</th><th class="num">Unique parents</th><th class="num">Accepted</th><th class="num">Parent extracted</th><th class="num">Validity</th><th class="num">Parent uniqueness</th><th class="num">Intake wall (s)</th></tr>
+{% for key in ['actives','decoys'] %}{% set group=chemistry.intake_audit[key] %}<tr><td>{{ key }}</td><td class="num">{{ group.submitted_rows }}</td><td class="num">{{ group.valid_structures }}</td><td class="num">{{ group.unique_valid_parents }}</td><td class="num">{{ group.accepted_for_preparation }}</td><td class="num">{{ group.parent_extractions }}</td><td class="num">{{ '%.2f%%'|format(100*group.validity) }}</td><td class="num">{{ '%.2f%%'|format(100*group.parent_uniqueness) }}</td><td class="num">{{ '%.2f'|format(group.wall_seconds) }}</td></tr>{% endfor %}</table>
+<p class="note">Property distributions cover every accepted parent, including any molecule that later failed 3D preparation or docking. Score–property correlations use observed docking scores only.</p>
+
+<table class="kv"><tr><th>Property</th><th class="num">Active mean</th><th class="num">Active median</th><th class="num">Decoy mean</th><th class="num">Decoy median</th><th class="num">Mean difference<br>active − decoy</th></tr>
+{% for row in chemistry_rows %}<tr><td>{{ row.label }}</td><td class="num">{{ 'n/a' if row.active_mean is none else '%.3f'|format(row.active_mean) }}</td><td class="num">{{ 'n/a' if row.active_median is none else '%.3f'|format(row.active_median) }}</td><td class="num">{{ 'n/a' if row.decoy_mean is none else '%.3f'|format(row.decoy_mean) }}</td><td class="num">{{ 'n/a' if row.decoy_median is none else '%.3f'|format(row.decoy_median) }}</td><td class="num">{{ 'n/a' if row.mean_difference is none else '%+.3f'|format(row.mean_difference) }}</td></tr>{% endfor %}</table>
+
+<h2>Chemical-property figures</h2>
+{% for key,title,caption in chemistry_plot_layout %}{% if key in plot_divs %}<div class="plotcard"><div class="cap"><strong>{{ title }}</strong> — {{ caption }}</div>{{ plot_divs[key] }}</div>{% endif %}{% endfor %}
+{% endif %}
+
+
 <h2>Observed score statistics</h2>
 <table class="kv"><tr><th>Group</th><th class="num">n</th><th class="num">Mean</th><th class="num">Median</th><th class="num">SD</th><th class="num">Min</th><th class="num">Max</th></tr>
 {% for key in ['actives','decoys'] %}{% set group=stats[key] %}<tr><td>{{ key }}</td><td class="num">{{ group.n }}</td>{% for field in ['mean','median','std','min','max'] %}<td class="num">{{ 'n/a' if group[field] is none else '%.3f'|format(group[field]) }}</td>{% endfor %}</tr>{% endfor %}</table>
 <p class="note">Mann–Whitney U={{ mw.u if mw.u is not none else 'n/a' }}, {{ mw.alternative }} p={{ 'n/a' if mw.p_value is none else '%.3g'|format(mw.p_value) }}. Probability that a randomly selected active ranks ahead of a randomly selected decoy={{ 'n/a' if mw.probability_active_better is none else '%.4f'|format(mw.probability_active_better) }}. The p-value is evidence about distributional separation, not its practical magnitude or direction.</p>
 
-<h2>Figures</h2>
+{% if computational_cost %}             #### brand new section for computational cost, only appears when the harness supplies it
+<h2>Recorded docking cost</h2>
+<p class="note">Wall time and throughput describe the recorded invocation. “Fresh” excludes cached poses. Requested CPU-slot hours are an explicit wall-time estimate from concurrent jobs × Smina CPU/job; they are not measured operating-system CPU consumption and should not be treated as billing data.</p>
+<table class="kv"><tr><th>Cohort</th><th class="num">Total</th><th class="num">Fresh</th><th class="num">Cached</th><th class="num">Failed</th><th class="num">Workers</th><th class="num">CPU/job</th><th class="num">Wall (h)</th><th class="num">Fresh/h</th><th class="num">Requested slot-h</th></tr>
+{% for key in ['actives','decoys'] %}{% set group=computational_cost[key] %}{% if group %}<tr><td>{{ key }}</td><td class="num">{{ group.counts.total }}</td><td class="num">{{ group.counts.ok }}</td><td class="num">{{ group.counts.cached }}</td><td class="num">{{ group.counts.failed }}</td><td class="num">{{ group.timing.workers_requested }}</td><td class="num">{{ group.timing.cpu_slots_per_task }}</td><td class="num">{{ '%.3f'|format(group.timing.wall_seconds/3600) }}</td><td class="num">{{ 'n/a' if group.timing.fresh_successes_per_wall_second is none else '%.1f'|format(3600*group.timing.fresh_successes_per_wall_second) }}</td><td class="num">{{ '%.3f'|format(group.timing.estimated_requested_cpu_slot_hours) }}</td></tr>{% endif %}{% endfor %}</table>
+{% endif %}
+
+
+<h2>Docking-performance figures</h2>
 {% for key,title,caption in plot_layout %}{% if key in plot_divs %}<div class="plotcard"><div class="cap"><strong>{{ title }}</strong> — {{ caption }}</div>{{ plot_divs[key] }}</div>{% endif %}{% endfor %}
 
 <div class="foot"><h2>Provenance</h2>
@@ -90,9 +120,29 @@ def render_report(
     versions: dict,
     audit: dict,
     provenance: dict,
+    chemistry: dict | None = None,
+    computational_cost: dict | None = None,
 ) -> str:
     metric_rows = [_format_metric(key, value, intervals) for key, value in metric_values.items()]
     confidence_label = f"{100 * meta['confidence_level']:.0f}% bootstrap"
+    chemistry_rows = []
+    if chemistry is not None:
+        for definition in chemistry["property_definitions"]:
+            key = definition["key"]
+            active = chemistry["cohorts"]["actives"]["properties"][key]
+            decoy = chemistry["cohorts"]["decoys"]["properties"][key]
+            chemistry_rows.append(
+                {
+                    "label": definition["label"],
+                    "active_mean": active["mean"],
+                    "active_median": active["median"],
+                    "decoy_mean": decoy["mean"],
+                    "decoy_median": decoy["median"],
+                    "mean_difference": chemistry[
+                        "mean_difference_actives_minus_decoys"
+                    ][key],
+                }
+            )
     body = _TEMPLATE.render(
         meta=meta,
         metric_rows=metric_rows,
@@ -101,6 +151,10 @@ def render_report(
         mw=stats["mannwhitney"],
         plot_divs={key: _fig_to_div(key, fig) for key, fig in figures.items()},
         plot_layout=PLOT_LAYOUT,
+        chemistry=chemistry,
+        chemistry_rows=chemistry_rows,
+        computational_cost=computational_cost,
+        chemistry_plot_layout=CHEMISTRY_PLOT_LAYOUT,
         versions=versions,
         audit=audit,
         provenance=provenance,
