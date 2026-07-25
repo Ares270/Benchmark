@@ -54,16 +54,21 @@ def build_comparison_table(metrics_jsons: list[Path]) -> pd.DataFrame:
     return table[columns].apply(pd.to_numeric, errors="raise")
 
 
-def build_chemistry_comparison_table(
+
+
+
+######## load property means from multiple runs ########
+
+def build_chemistry_comparison_table(               
     metrics_jsons: list[Path],
 ) -> pd.DataFrame | None:
     """Load active/candidate parent-property means from compatible run files."""
 
     rows = []
     missing = []
-    for metrics_json in metrics_jsons:
-        path = Path(metrics_json)
-        data = json.loads(path.read_text(encoding="utf-8"))
+    for metrics_json in metrics_jsons:                          # For every metrics.json, the script extracts mean properties from the active/candidate cohort
+        path = Path(metrics_json)                               # If no selected runs have chemistry, the old docking-only comparison still works
+        data = json.loads(path.read_text(encoding="utf-8"))     # If some runs have chemistry and some do not, it refuses the comparison
         method = str(data.get("name") or path.parent.name)
         chemical = data.get("chemistry")
         if chemical is None:
@@ -124,10 +129,10 @@ def render_comparison(
         chemistry_figure = plots.chemical_mean_comparison_interactive(
             chemistry_table
         )
-        chemistry_figure_div = chemistry_figure.to_html(
-            full_html=False,
-            include_plotlyjs=False,
-            div_id="chemistry-comparison-bars",
+        chemistry_figure_div = chemistry_figure.to_html(            ##### NEW CHEMISTRY PLOT
+            full_html=False,                                            # When chemistry exists, it additionally draws:
+            include_plotlyjs=False,                                     # -A table of mean properties
+            div_id="chemistry-comparison-bars",                         # -Twelve separate bar-chart panels
             config={"displaylogo": False, "responsive": True},
         )
         chemistry_formatted = chemistry_table.rename(

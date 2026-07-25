@@ -309,7 +309,7 @@ def run_intake(input_path: Path, output_dir: Path) -> dict:
         if not reasons and parent_smiles:
             if parent_smiles in accepted_structures:
                 reasons.append(
-                    f"duplicate_structure_of_{accepted_structures[parent_smiles]}"
+                    f"duplicate_parent_of_{accepted_structures[parent_smiles]}"
                 )
             else:
                 accepted_structures[parent_smiles] = molecule_id
@@ -368,11 +368,16 @@ def run_intake(input_path: Path, output_dir: Path) -> dict:
             "blank_lines": blank_lines,                                     # Blank lines
             "submitted_rows": n_submitted,                                  # Submitted rows
             "valid_structures": n_valid,                                    # Parseable structures
-            "unique_valid_structures": n_unique,                            # Unique valid structures
+            "unique_valid_structures": n_unique,                            # Backward-compatible name
+            "unique_valid_parents": n_unique,                               # Unique evaluated parents
             "accepted_for_preparation": n_accepted,                         # Accepted structures
             "rejected_rows": n_submitted - n_accepted,                      # Frequency of every rejection reason
             "multifragment_valid_structures": sum(
                 bool(row["structure_valid"]) and int(row["fragment_count"]) > 1
+                for row in rows
+            ),
+            "parent_extractions": sum(
+                bool(row["structure_valid"]) and bool(row["parent_was_extracted"])
                 for row in rows
             ),
             "rejection_reasons": rejected_reason_counts,
@@ -380,13 +385,27 @@ def run_intake(input_path: Path, output_dir: Path) -> dict:
         "aggregate_metrics": {
             "validity": n_valid / n_submitted if n_submitted else 0.0,
             "uniqueness_among_valid": n_unique / n_valid if n_valid else 0.0,
+            "uniqueness_among_valid_parents": (
+                n_unique / n_valid if n_valid else 0.0
+            ),
             "accepted_fraction": n_accepted / n_submitted if n_submitted else 0.0,
         },
         "canonicalization": {
             "rdkit_canonical_smiles": True,
             "stereochemistry_preserved": True,
-            "salt_or_fragment_stripping": False,
+            "salt_or_fragment_stripping": True,
             "tautomer_standardization": False,
+            "charge_neutralization": False,
+        },
+        "evaluation_policy": {
+            "submitted_smiles_preserved": True,
+            "evaluated_parent": (
+                "deterministic largest component by heavy atoms, then molecular "
+                "weight, then canonical isomeric SMILES"
+            ),
+            "disconnected_smaller_fragments_removed": True,
+            "tautomer_enumeration": False,
+            "stereoisomer_enumeration": False,
             "charge_neutralization": False,
         },
         "property_methods": {

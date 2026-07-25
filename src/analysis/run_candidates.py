@@ -35,12 +35,22 @@ from .dataset import AnalysisInputError, load_score_table
 
 
 CANDIDATE_SCHEMA_VERSION = 1
-VALID_ROLES = ("model", "naive_baseline", "pilot", "unassigned")
+VALID_ROLES = ("model", "naive_baseline", "pilot", "unassigned")   # Roles for each cohort
 
+
+
+
+
+
+#### Convert NaN and +/- inf to None for JSON file hygiene ####
 
 def _finite_or_none(value: float) -> float | None:
     return float(value) if np.isfinite(value) else None
 
+
+
+
+#######  Twelve summary numbers over the observed scores  #######
 
 def _score_distribution(values: np.ndarray) -> dict:
     return {
@@ -51,10 +61,10 @@ def _score_distribution(values: np.ndarray) -> dict:
             if values.size > 1
             else None
         ),
-        "minimum_best": _finite_or_none(np.min(values)),
-        "p05": _finite_or_none(np.quantile(values, 0.05)),
-        "p10": _finite_or_none(np.quantile(values, 0.10)),
-        "p25": _finite_or_none(np.quantile(values, 0.25)),
+        "minimum_best": _finite_or_none(np.min(values)),        # More negative is better
+        "p05": _finite_or_none(np.quantile(values, 0.05)),      # docking convention
+        "p10": _finite_or_none(np.quantile(values, 0.10)),      # these are the statistics for the
+        "p25": _finite_or_none(np.quantile(values, 0.25)),      # docking scores only
         "median": _finite_or_none(np.median(values)),
         "p75": _finite_or_none(np.quantile(values, 0.75)),
         "p90": _finite_or_none(np.quantile(values, 0.90)),
@@ -64,10 +74,10 @@ def _score_distribution(values: np.ndarray) -> dict:
 
 
 def _load_docking_cost(scores_path: Path) -> tuple[dict | None, Path | None]:
-    summary_path = Path(scores_path).parent / "_dock_summary.json"
-    if not summary_path.is_file():
-        return None, None
-    try:
+    summary_path = Path(scores_path).parent / "_dock_summary.json"      # Looks for the JSON file
+    if not summary_path.is_file():                                      # silent if JSON missing
+        return None, None                                               # Loud if missmatch or missing hash
+    try:                                                                # Hashing for extra verification
         record = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise AnalysisInputError(
@@ -103,14 +113,24 @@ def _screening_protocol(cost: dict | None) -> dict | None:
     }
 
 
+
+
+
+
+
+
+
+########## For each of the 12 properties, we do a spearman ρ agains the docking score ############
+
+
 def _score_property_correlations(joined: pd.DataFrame) -> dict:
     observed = joined.loc[joined["score"].notna()]
     values = {}
     for column in PROPERTY_COLUMNS:
         if (
             len(observed) < 3
-            or observed["score"].nunique() < 2
-            or observed[column].nunique() < 2
+            or observed["score"].nunique() < 2          # Guardrails for low sample size
+            or observed[column].nunique() < 2           # They force None for the JSON stuff
         ):
             values[column] = None
         else:
@@ -126,6 +146,33 @@ def _score_property_correlations(joined: pd.DataFrame) -> dict:
     }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def build_candidate_profile(
     scores_path: Path,
     intake_path: Path,
@@ -138,18 +185,18 @@ def build_candidate_profile(
 
     if role not in VALID_ROLES:
         raise AnalysisInputError(
-            f"Unknown candidate role {role!r}; choose one of {VALID_ROLES}"
+            f"Unknown candidate role {role!r}; choose one of {VALID_ROLES}"            #### 6 GATES EXECUTED IN ORDER
         )
-    properties, intake_audit = _load_intake(intake_path, "candidates")
-    scores, score_audit = load_score_table(scores_path, "candidates")
-    accepted_ids = set(properties["molecule_id"].astype(str))
-    score_ids = set(scores["molecule_id"].astype(str))
-    unknown = sorted(score_ids - accepted_ids)
-    if unknown:
+    properties, intake_audit = _load_intake(intake_path, "candidates")             # 1 # Role gate - fail loud on an unknown role        
+    scores, score_audit = load_score_table(scores_path, "candidates")              # 2 # Load Both Tables gate - or else
+    accepted_ids = set(properties["molecule_id"].astype(str))                      # 3 # Referential integrity check
+    score_ids = set(scores["molecule_id"].astype(str))                                      # Score IDs must be a subset of Accepted IDs
+    unknown = sorted(score_ids - accepted_ids)                                              # ALSO, the intake table is the authority
+    if unknown:                                                                             # on what was legitimately evaluated
         raise AnalysisInputError(
-            "Candidate score IDs are absent from accepted intake parents: "
-            + ", ".join(unknown[:8])
-        )
+            "Candidate score IDs are absent from accepted intake parents: "        # 4 # The Join. Left join, intake on the left.
+            + ", ".join(unknown[:8])                                               # 5 # The emptyt check
+        )                                                                          # 6 # Profile Asse,bly
 
     joined = properties.merge(
         scores,
@@ -193,8 +240,8 @@ def build_candidate_profile(
             "n_accepted_parents": int(len(properties)),
             "n_with_observed_score": int(len(observed)),
             "n_accepted_absent_from_score_table": int(len(accepted_ids - score_ids)),
-            "coverage_over_accepted_parents": float(len(observed) / len(properties)),
-            "successful_per_submitted": float(
+            "coverage_over_accepted_parents": float(len(observed) / len(properties)),   #    "did my docking work"
+            "successful_per_submitted": float(                                          # vs "what fraction of what my model produced survived the whole pipeline."
                 len(observed) / intake_audit["submitted_rows"]
             ),
             "score_distribution_kcal_mol": _score_distribution(
@@ -223,6 +270,16 @@ def build_candidate_profile(
     return joined, profile
 
 
+
+
+
+
+
+
+
+
+
+
 def _run_paths(outdir: Path, name: str) -> tuple[Path, Path]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", name):
         raise AnalysisInputError(
@@ -236,6 +293,12 @@ def _run_paths(outdir: Path, name: str) -> tuple[Path, Path]:
     working.mkdir(parents=True)
     return working, final
 
+
+
+
+
+
+####     Charts     ####
 
 def _candidate_figures(joined: pd.DataFrame) -> tuple[str, str]:
     observed = joined.loc[joined["score"].notna()].sort_values("score")
@@ -420,6 +483,17 @@ def run_candidate_analysis(
     )
     working.replace(final)
     return final / "report.html"
+
+
+
+
+
+
+
+
+
+
+
 
 
 def main() -> None:

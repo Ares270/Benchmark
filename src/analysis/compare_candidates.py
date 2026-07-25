@@ -3,6 +3,10 @@
 The comparison is budget- and protocol-gated.  It keeps generation quality,
 docking scores, molecular properties, and computational cost on separate axes;
 it does not manufacture a composite winner score.
+
+
+it is compare.py for the unlabeled half of the benchmark, with fairness enforcement replacing the metric whitelist.
+
 """
 
 from __future__ import annotations
@@ -22,8 +26,16 @@ from src.harness import runtime
 from .chemistry import PROPERTY_COLUMNS, PROPERTY_LABELS
 
 
+
+
+
+
+
+################     GATEKEEPER SCRIPT    #################
+
+
 PROTOCOL_KEYS = (
-    "smina_cpu_per_job",
+    "smina_cpu_per_job",        # these parameters must match across all runs
     "box_center_a",
     "box_size_a",
     "exhaustiveness",
@@ -33,19 +45,19 @@ PROTOCOL_KEYS = (
     "timeout_seconds_per_ligand",
 )
 
-
+                                                                                    # CRITERIA TO EVEN WRITE ANYTHING
 class CandidateComparisonError(ValueError):
-    """Raised when candidate runs are not scientifically comparable."""
-
-
-def _load_run(path: Path) -> dict:
-    path = Path(path)
+    """Raised when candidate runs are not scientifically comparable."""                 # Four runs exactly
+                                                                                        # 3 models and one baseline exactly
+                                                                                        # identical submitted budget
+def _load_run(path: Path) -> dict:                                                      # byte-identical receptor and docking parameters
+    path = Path(path)                                                                   # authenticated cost data on every run
     try:
         run = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise CandidateComparisonError(f"Cannot read {path}: {error}") from error
     if run.get("stage") != "candidate_analysis":
-        raise CandidateComparisonError(f"{path} is not a candidate-analysis metrics file")
+        raise CandidateComparisonError(f"{path} is not a candidate-analysis metrics file")  # Inputs are 4 metrics.json files
     run["_metrics_path"] = str(path.resolve())
     return run
 
@@ -77,23 +89,31 @@ def _scientific_protocol(run: dict) -> dict:
     }
 
 
+
+
+
+
+
+
+
+
 def build_candidate_comparison(
     metrics_paths: list[Path],
 ) -> tuple[list[dict], pd.DataFrame, pd.DataFrame, dict]:
-    """Validate the four-run design and return summary/property tables."""
-
-    if len(metrics_paths) != 4:
-        raise CandidateComparisonError(
+    """Validate the four-run design and return summary/property tables."""                    # Load and base check each file
+                                                                                              # Names non blank and unique
+    if len(metrics_paths) != 4:                                                               # Role census (3 models 1 baseline)
+        raise CandidateComparisonError(                                                       # baseline has a source description
             "Candidate comparison requires exactly four runs: three models and one naive baseline"
-        )
-    runs = [_load_run(path) for path in metrics_paths]
-    names = [str(run.get("name", "")).strip() for run in runs]
-    if any(not name for name in names):
-        raise CandidateComparisonError("Every candidate run needs a nonblank name")
-    duplicates = sorted({name for name in names if names.count(name) > 1})
+        )                                                                                     # submitted budgets identical
+    runs = [_load_run(path) for path in metrics_paths]                                        # protocols identical
+    names = [str(run.get("name", "")).strip() for run in runs]                                # per-run cost exists
+    if any(not name for name in names):                                                       # assemble two DataFrames
+        raise CandidateComparisonError("Every candidate run needs a nonblank name")             
+    duplicates = sorted({name for name in names if names.count(name) > 1})                    # then....
     if duplicates:
-        raise CandidateComparisonError(f"Candidate run names must be unique: {duplicates}")
-
+        raise CandidateComparisonError(f"Candidate run names must be unique: {duplicates}")   # _render_comparison builds the HTML
+                                                                                              # write_candidate_comparison writes to disk
     roles = [run.get("role") for run in runs]
     if roles.count("model") != 3 or roles.count("naive_baseline") != 1:
         raise CandidateComparisonError(
