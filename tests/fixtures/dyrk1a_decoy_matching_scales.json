@@ -1,0 +1,11 @@
+{
+  "source_path": "data/external/dyrk1a_decoys_v1_20260719/selection.json",
+  "source_sha256": "fe9d8ca1ea263e5c1c9683600e97ad0c9dbeb4ab83cb4a8034d1e7dfcf63ff09",
+  "matching_scales": {
+    "molecular_weight": 76.77334771801411,
+    "clogp": 1.1058444856289873,
+    "hbond_donors": 1.280339004754061,
+    "hbond_acceptors": 1.763249245547846,
+    "rotatable_bonds": 2.0416497307192385
+  }
+}
