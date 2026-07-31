@@ -1,2 +1,4 @@
-timestamp,name,n_actives,n_decoys,auc,ef1,ef5,outdir
-2026-07-09_101234,plumbing_test_fakedecoys,10,200,0.9495,21.0,11.455,/home/ares/projects/Benchmark/results/plumbing_test_fakedecoys_2026-07-09_101234
+timestamp_utc,name,n_actives,n_decoys,auc,ef_1pct,ef_5pct,outdir,bedroc,ef_10pct
+2026-07-09_101234,plumbing_test_fakedecoys,10,200,0.9495,21.0,11.455,/home/ares/projects/Benchmark/results/plumbing_test_fakedecoys_2026-07-09_101234,,
+2026-07-27_200722_174134Z,smoke_5x250,5,250,0.7408000000000001,0.0,0.0,/home/ares/projects/Benchmark/results/smoke_5x250_2026-07-27_200722_174134Z,0.104913395021754,1.9615384615384617
+2026-07-28_181332_576010Z,10x30_smoke_run_10A_smaller_box,10,300,0.7516666666666667,0.0,5.8125,/home/ares/projects/Benchmark/results/10x30_smoke_run_10A_smaller_box_2026-07-28_181332_576010Z,0.25182400668788796,3.0

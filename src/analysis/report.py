@@ -24,6 +24,46 @@ CHEMISTRY_PLOT_LAYOUT = [
     ("score_property_correlations", "Score–property correlations", "Spearman correlations use observed dockings only. Correlation is diagnostic of scoring bias, not evidence of causation."),
 ]
 
+COHORTS = ("actives", "decoys")
+
+# Columns of the harness-configuration table, in display order.
+HARNESS_CONFIG_DISPLAY = (
+    "receptor_path",
+    "receptor_sha256",
+    "box_center",
+    "box_size",
+    "exhaustiveness",
+    "seed",
+    "num_modes",
+    "cpu_per_job",
+    "num_workers",
+    "smina_version",
+    "scoring_function",
+)
+
+# Scoring actives and decoys under different values of any of these makes the
+# two cohorts incomparable, which invalidates every ranking metric derived
+# from them. Differences here are fatal, not cosmetic.
+HARNESS_CONFIG_COMPARED = (
+    "receptor_sha256",
+    "box_center",
+    "box_size",
+    "exhaustiveness",
+    "scoring_function",
+)
+
+SIZE_CORRELATION_ROWS = (
+    ("pooled", "All analyzed molecules"),
+    ("actives", "actives"),
+    ("decoys", "decoys"),
+)
+
+_ABSENT = object()
+
+
+class HarnessConfigurationMismatch(RuntimeError):
+    """Raised when actives and decoys were not docked under one configuration."""
+
 
 
 _TEMPLATE = Environment(autoescape=True).from_string(r"""
@@ -37,6 +77,7 @@ _TEMPLATE = Environment(autoescape=True).from_string(r"""
   table.kv{border-collapse:collapse;width:100%;font-size:.88rem;background:#fff;border:1px solid #e5e7eb}table.kv th,table.kv td{text-align:left;padding:9px 12px;border-bottom:1px solid #f0f1f3}table.kv th{background:#f9fafb}.num{text-align:right!important;font-variant-numeric:tabular-nums}
   .plotcard{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px 4px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
   .cap{color:#6b7280;font-size:.83rem;margin:2px 4px 8px}.warning{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;font-size:.86rem}.foot{margin-top:40px;font-size:.8rem;color:#6b7280}.foot code{word-break:break-all;background:#f3f4f6;padding:1px 5px;border-radius:4px}
+  table.kv td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.76rem;word-break:break-all}
 </style>
 
 <h1>DYRK1A docking benchmark — {{ meta.name }}</h1>
@@ -74,6 +115,29 @@ _TEMPLATE = Environment(autoescape=True).from_string(r"""
 {% for key in ['actives','decoys'] %}{% set group=stats[key] %}<tr><td>{{ key }}</td><td class="num">{{ group.n }}</td>{% for field in ['mean','median','std','min','max'] %}<td class="num">{{ 'n/a' if group[field] is none else '%.3f'|format(group[field]) }}</td>{% endfor %}</tr>{% endfor %}</table>
 <p class="note">Mann–Whitney U={{ mw.u if mw.u is not none else 'n/a' }}, {{ mw.alternative }} p={{ 'n/a' if mw.p_value is none else '%.3g'|format(mw.p_value) }}. Probability that a randomly selected active ranks ahead of a randomly selected decoy={{ 'n/a' if mw.probability_active_better is none else '%.4f'|format(mw.probability_active_better) }}. The p-value is evidence about distributional separation, not its practical magnitude or direction.</p>
 
+{% if size %}
+<h2>Size dependence</h2>
+<p class="note">Heavy atom count is recomputed with RDKit from the same <code>.smi</code> inputs that were prepared and docked. It tests whether the docking score is tracking molecular size rather than binding chemistry.</p>
+{% if 'size_dependence' in plot_divs %}<div class="plotcard"><div class="cap"><strong>Docking score vs heavy atom count</strong> — one point per molecule with an observed docking score.</div>{{ plot_divs['size_dependence'] }}</div>{% endif %}
+<p class="note">{{ size.n_correlated }} of {{ size.n_analyzed }} analyzed molecules are plotted and correlated; {{ size.n_excluded_missing_score }} molecule(s) with a missing or failed score are excluded.</p>
+
+<table class="kv"><tr><th>Set</th><th class="num">n</th><th class="num">Spearman ρ</th><th class="num">p (two-sided)</th><th class="num">Pearson r</th><th class="num">p (two-sided)</th></tr>
+{% for row in size_correlation_rows %}<tr><td>{{ row.label }}</td><td class="num">{{ row.n }}</td><td class="num">{{ row.spearman_rho }}</td><td class="num">{{ row.spearman_p_value }}</td><td class="num">{{ row.pearson_r }}</td><td class="num">{{ row.pearson_p_value }}</td></tr>{% endfor %}</table>
+<p class="note">Spearman is the primary statistic; it needs only a monotone relationship. Pearson is reported second and assumes linearity.</p>
+
+<table class="kv"><tr><th>Cohort</th><th class="num">n</th><th class="num">Mean heavy atoms</th><th class="num">Median</th><th class="num">SD</th></tr>
+{% for key in ['actives','decoys'] %}{% set group=size.heavy_atom_counts[key] %}<tr><td>{{ key }}</td><td class="num">{{ group.n }}</td><td class="num">{{ 'n/a' if group.mean is none else '%.2f'|format(group.mean) }}</td><td class="num">{{ 'n/a' if group.median is none else '%.2f'|format(group.median) }}</td><td class="num">{{ 'n/a' if group.std is none else '%.2f'|format(group.std) }}</td></tr>{% endfor %}
+<tr><td colspan="4">Standardized mean difference (actives − decoys) / pooled SD</td><td class="num">{{ 'n/a' if size.standardized_mean_difference_actives_minus_decoys is none else '%+.3f'|format(size.standardized_mean_difference_actives_minus_decoys) }}</td></tr></table>
+<p class="note">Heavy atom counts cover every analyzed molecule, including any whose docking failed; the correlations above cover only observed scores.</p>
+<p class="note"><strong>Scope:</strong> a correlation between docking score and heavy atom count is a property of the scoring function and of these particular compound sets, and does not by itself establish that any individual ranking is wrong.</p>
+{% endif %}
+
+<h2>Harness configuration</h2>
+<p class="note">Recorded by the docking harness when each cohort was docked and read back from the <code>_dock_summary.json</code> files whose SHA-256 hashes match the analyzed score tables. Nothing in this table is read from the harness configuration as it stands at analysis time.</p>
+<table class="kv"><tr><th>Cohort</th><th>Receptor</th><th>Receptor SHA-256</th><th>Box centre (Å)</th><th>Box size (Å)</th><th class="num">Exhaustiveness</th><th class="num">Seed</th><th class="num">Modes</th><th class="num">CPU/job</th><th class="num">Workers</th><th>Smina</th><th>Scoring</th></tr>
+{% for row in harness_config_rows %}{% if row.recorded %}<tr><td>{{ row.cohort }}</td><td class="mono">{{ row.fields.receptor_path }}</td><td class="mono">{{ row.fields.receptor_sha256 }}</td><td>{{ row.fields.box_center }}</td><td>{{ row.fields.box_size }}</td><td class="num">{{ row.fields.exhaustiveness }}</td><td class="num">{{ row.fields.seed }}</td><td class="num">{{ row.fields.num_modes }}</td><td class="num">{{ row.fields.cpu_per_job }}</td><td class="num">{{ row.fields.num_workers }}</td><td>{{ row.fields.smina_version }}</td><td>{{ row.fields.scoring_function }}</td></tr>{% else %}<tr><td>{{ row.cohort }}</td><td colspan="11">not recorded</td></tr>{% endif %}{% endfor %}</table>
+{% if not harness_config_recorded %}<p class="note">“not recorded” means the docking summary for that cohort predates configuration capture. No value is inferred or substituted for it.</p>{% endif %}
+
 {% if computational_cost %}             #### brand new section for computational cost, only appears when the harness supplies it
 <h2>Recorded docking cost</h2>
 <p class="note">Wall time and throughput describe the recorded invocation. “Fresh” excludes cached poses. Requested CPU-slot hours are an explicit wall-time estimate from concurrent jobs × Smina CPU/job; they are not measured operating-system CPU consumption and should not be treated as billing data.</p>
@@ -89,7 +153,9 @@ _TEMPLATE = Environment(autoescape=True).from_string(r"""
 <p>Git commit <code>{{ provenance.git.commit }}</code> · dirty worktree: <strong>{{ provenance.git.dirty }}</strong> · wall time {{ '%.1f'|format(meta.wall_seconds) }} s</p>
 {% for name,record in provenance.inputs.items() %}<p>{{ name }}: <code>{{ record.path }}</code><br>SHA-256 <code>{{ record.sha256 }}</code></p>{% endfor %}
 <p>Software: {% for key,value in versions.items() %}{{ key }} <code>{{ value }}</code>{% if not loop.last %} · {% endif %}{% endfor %}</p>
-<p><strong>Harness warning:</strong> receptor, box, seed, and search settings in the run log are an analysis-time snapshot only. The score-file hashes identify the analyzed inputs; this script cannot prove which harness configuration generated them.</p>
+{% if harness_config_recorded %}<p><strong>Harness configuration source:</strong> the receptor, box, seed, and search settings shown above are read from the dock-time summary files whose SHA-256 hashes match the analyzed score files. They are a record of the configuration in effect when these scores were produced, not an analysis-time snapshot.</p>
+{% else %}<p><strong>Harness warning:</strong> at least one cohort has no dock-time configuration record, so receptor, box, seed, and search settings for it are unknown here. Any such settings in the run log are an analysis-time snapshot only. The score-file hashes identify the analyzed inputs; this script cannot prove which harness configuration generated them.</p>
+{% endif %}
 </div></div>
 """)
 
@@ -102,6 +168,117 @@ def _format_metric(key: str, value: float, intervals: dict) -> dict[str, Any]:
     if interval:
         formatted_interval = f"[{interval['low']:.{digits}f}, {interval['high']:.{digits}f}]"
     return {"label": label, "value": f"{value:.{digits}f}", "interval": formatted_interval}
+
+
+def _format_config_value(value: Any) -> str:
+    """Render one recorded configuration value; absent means absent."""
+
+    if value is _ABSENT or value is None:
+        return "n/a"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(
+            f"{float(item):g}" if isinstance(item, (int, float)) else str(item)
+            for item in value
+        )
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _recorded_configurations(computational_cost: dict | None) -> dict[str, dict]:
+    """Dock-time configuration blocks, keyed by cohort; absent ones omitted."""
+
+    records = {}
+    for cohort in COHORTS:
+        summary = (computational_cost or {}).get(cohort) or {}
+        recorded = summary.get("harness_config")
+        if isinstance(recorded, dict) and recorded:
+            records[cohort] = recorded
+    return records
+
+
+def check_harness_configuration(computational_cost: dict | None) -> None:
+    """Public entry point so a caller can fail before doing any work."""
+
+    _require_one_configuration(_recorded_configurations(computational_cost))
+
+
+def _require_one_configuration(records: dict[str, dict]) -> None:
+    """Abort when the two cohorts were not docked under the same settings."""
+
+    if set(records) != set(COHORTS):
+        return
+    mismatched = [
+        (
+            field,
+            records["actives"].get(field, _ABSENT),
+            records["decoys"].get(field, _ABSENT),
+        )
+        for field in HARNESS_CONFIG_COMPARED
+        if records["actives"].get(field, _ABSENT)
+        != records["decoys"].get(field, _ABSENT)
+    ]
+    if not mismatched:
+        return
+    detail = "; ".join(
+        f"{field}: actives={_format_config_value(active)!r} "
+        f"decoys={_format_config_value(decoy)!r}"
+        for field, active, decoy in mismatched
+    )
+    raise HarnessConfigurationMismatch(
+        "Actives and decoys were docked under different harness configurations, "
+        "so their scores cannot be ranked against each other. Mismatched "
+        f"field(s): {detail}"
+    )
+
+
+def _harness_config_rows(computational_cost: dict | None) -> tuple[list[dict], bool]:
+    """One row per cohort from the dock-time records; never from config.py."""
+
+    records = _recorded_configurations(computational_cost)
+    rows: list[dict[str, Any]] = []
+    for cohort in COHORTS:
+        recorded = records.get(cohort)
+        if recorded is None:
+            rows.append({"cohort": cohort, "recorded": False})
+            continue
+        rows.append(
+            {
+                "cohort": cohort,
+                "recorded": True,
+                # Not "values": Jinja resolves row.values to dict.values first.
+                "fields": {
+                    field: _format_config_value(recorded.get(field, _ABSENT))
+                    for field in HARNESS_CONFIG_DISPLAY
+                },
+            }
+        )
+    _require_one_configuration(records)
+    return rows, len(records) == len(COHORTS)
+
+
+def _size_correlation_rows(size: dict | None) -> list[dict[str, Any]]:
+    if size is None:
+        return []
+    rows = []
+    for key, label in SIZE_CORRELATION_ROWS:
+        record = size["correlations"][key]
+        rows.append(
+            {
+                "label": label,
+                "n": record["n"],
+                **{
+                    field: (
+                        "n/a" if record[field] is None else f"{record[field]:.4g}"
+                    )
+                    for field in (
+                        "spearman_rho", "spearman_p_value",
+                        "pearson_r", "pearson_p_value",
+                    )
+                },
+            }
+        )
+    return rows
 
 
 def _fig_to_div(key: str, figure: go.Figure) -> Markup:
@@ -122,6 +299,7 @@ def render_report(
     provenance: dict,
     chemistry: dict | None = None,
     computational_cost: dict | None = None,
+    size: dict | None = None,
 ) -> str:
     metric_rows = [_format_metric(key, value, intervals) for key, value in metric_values.items()]
     confidence_label = f"{100 * meta['confidence_level']:.0f}% bootstrap"
@@ -143,6 +321,9 @@ def render_report(
                     ][key],
                 }
             )
+    harness_config_rows, harness_config_recorded = _harness_config_rows(
+        computational_cost
+    )
     body = _TEMPLATE.render(
         meta=meta,
         metric_rows=metric_rows,
@@ -154,6 +335,10 @@ def render_report(
         chemistry=chemistry,
         chemistry_rows=chemistry_rows,
         computational_cost=computational_cost,
+        harness_config_rows=harness_config_rows,
+        harness_config_recorded=harness_config_recorded,
+        size=size,
+        size_correlation_rows=_size_correlation_rows(size),
         chemistry_plot_layout=CHEMISTRY_PLOT_LAYOUT,
         versions=versions,
         audit=audit,

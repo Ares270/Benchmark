@@ -26,7 +26,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from . import chemistry, config, metrics, plots, provenance, report
+from . import chemistry, config, metrics, plots, provenance, report, size as size_module
 from .dataset import AnalysisInputError, build_dataset
 
 
@@ -112,6 +112,7 @@ def _save_static_figures(
     score_direction: str,
     chemical_frame: pd.DataFrame | None = None,     # new chemical figures
     chemical_profile: dict | None = None,           # if the chemistry analysis is done
+    size_frame: pd.DataFrame | None = None,         # heavy-atom diagnostic
 ) -> None:
     factories = {
         "roc_curve": lambda: plots.roc_static(fpr, tpr, auc),
@@ -131,6 +132,10 @@ def _save_static_figures(
                     chemical_profile
                 ),
             }
+        )
+    if size_frame is not None:
+        factories["size_dependence"] = lambda: plots.size_dependence_static(
+            size_frame, score_direction
         )
     for filename, factory in factories.items():
         figure = factory()
@@ -216,6 +221,8 @@ def run(
     *,
     active_intake_path: Path | None = None,     # this change was made to allow for chemical profiling
     decoy_intake_path: Path | None = None,
+    active_smi_path: Path | None = None,        # docked .smi inputs, for the size diagnostic
+    decoy_smi_path: Path | None = None,
     missing_policy: str = config.MISSING_SCORE_POLICY,
     score_direction: str = config.SCORE_DIRECTION,              #Score direction comes from a single source 
     bootstrap_replicates: int = config.BOOTSTRAP_REPLICATES,
@@ -231,6 +238,10 @@ def run(
     if (active_intake_path is None) != (decoy_intake_path is None):
         raise AnalysisInputError(
             "Chemical profiling requires both active and decoy intake molecules.csv files"
+        )
+    if (active_smi_path is None) != (decoy_smi_path is None):
+        raise AnalysisInputError(
+            "The size diagnostic requires both the active and the decoy .smi input"
         )
 
     dataset = build_dataset(
@@ -252,6 +263,10 @@ def run(
             "actives": active_cost,
             "decoys": decoy_cost,
         }
+    report.check_harness_configuration(computational_cost)      # cohorts docked under
+                                                                # different settings are not
+                                                                # comparable; fail before any
+                                                                # output directory exists
     labels = frame["label"].to_numpy(int)
     scores = frame["score"].to_numpy(float)
 
@@ -296,6 +311,13 @@ def run(
             active_intake_path, decoy_intake_path, frame
         )
 
+    size_frame = None
+    size_profile = None
+    if active_smi_path is not None and decoy_smi_path is not None:              # heavy-atom count for every analyzed molecule
+        size_frame, size_profile = size_module.build_size_profile(              # raises if any scored ID has no input SMILES
+            frame, active_smi_path, decoy_smi_path
+        )
+
     run_dir, final_dir, timestamp = _run_directories(outdir, name)
     figure_dir = run_dir / config.FIG_SUBDIR
     interactive_dir = run_dir / config.INTERACTIVE_SUBDIR
@@ -307,6 +329,7 @@ def run(
         fpr, tpr, auc, frac_screened, frac_found, ef_points, score_direction,
         chemical_frame=chemical_frame,
         chemical_profile=chemical_profile,
+        size_frame=size_frame,
     )
     interactive_figures = {
         "roc": plots.roc_interactive(fpr, tpr, auc),
@@ -322,6 +345,10 @@ def run(
                 "chemical_landscape": plots.chemical_landscape_interactive(chemical_frame),
                 "score_property_correlations": plots.chemical_correlations_interactive(chemical_profile),
             }
+        )
+    if size_frame is not None:
+        interactive_figures["size_dependence"] = plots.size_dependence_interactive(
+            size_frame, score_direction
         )
     for filename, figure in interactive_figures.items():
         figure.write_html(
@@ -344,6 +371,9 @@ def run(
         input_records["decoy_intake"] = provenance.file_record(decoy_intake_path)
         input_records["active_intake_summary"] = provenance.file_record(active_intake_path.parent / "summary.json")
         input_records["decoy_intake_summary"] = provenance.file_record(decoy_intake_path.parent / "summary.json")
+    if active_smi_path is not None and decoy_smi_path is not None:
+        input_records["active_smi"] = provenance.file_record(active_smi_path)
+        input_records["decoy_smi"] = provenance.file_record(decoy_smi_path)
     if active_cost_path is not None:
         input_records["active_docking_summary"] = provenance.file_record(active_cost_path)
     if decoy_cost_path is not None:
@@ -372,6 +402,7 @@ def run(
         provenance_record,
         chemistry=chemical_profile,
         computational_cost=computational_cost,
+        size=size_profile,
     )
     report_path = run_dir / config.REPORT_NAME
     _write_text_atomic(report_path, html)
@@ -399,6 +430,8 @@ def run(
     }
     if chemical_profile is not None:
         metrics_output["chemistry"] = chemical_profile
+    if size_profile is not None:
+        metrics_output["size_dependence"] = size_profile
     if computational_cost is not None:
         metrics_output["computational_cost"] = computational_cost
     _write_text_atomic(run_dir / config.METRICS_NAME, _json_text(metrics_output))
@@ -420,6 +453,7 @@ def run(
             "bootstrap_seed": bootstrap_seed,
             "confidence_level": confidence_level,
             "chemical_profile_enabled": chemical_profile is not None,
+            "size_diagnostic_enabled": size_profile is not None,
         },
         "computational_cost": computational_cost,
         "dataset_audit": dataset.audit,
@@ -483,6 +517,18 @@ def main() -> None:
         default=None,
         help="optional decoy intake molecules.csv; requires --active-intake",
     )
+    parser.add_argument(
+        "--active-smi",
+        type=Path,
+        default=None,
+        help="actives .smi that was docked; enables the size diagnostic, requires --decoy-smi",
+    )
+    parser.add_argument(
+        "--decoy-smi",
+        type=Path,
+        default=None,
+        help="decoys .smi that was docked; requires --active-smi",
+    )
     parser.add_argument("--name", required=True, help="safe run identifier used in output paths")
     parser.add_argument("--outdir", type=Path, default=Path("results"))
     parser.add_argument("--id-column", default=config.ID_COLUMN)
@@ -509,6 +555,8 @@ def main() -> None:
             args.outdir,
             active_intake_path=args.active_intake,
             decoy_intake_path=args.decoy_intake,
+            active_smi_path=args.active_smi,
+            decoy_smi_path=args.decoy_smi,
             missing_policy=args.missing_policy,
             score_direction=args.score_direction,
             bootstrap_replicates=args.bootstrap_replicates,

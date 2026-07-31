@@ -301,6 +301,54 @@ def violin_interactive(actives: np.ndarray, decoys: np.ndarray) -> go.Figure:
     return _style_plotly(fig, "Observed score by class", "", "Docking score (kcal/mol)")
 
 
+####### docking score versus molecular size #######
+
+def _observed_by_cohort(frame: pd.DataFrame) -> list[tuple[pd.DataFrame, str, str]]:
+    """Decoys first so the smaller active cohort is drawn on top."""
+
+    observed = frame.loc[frame["score_observed"].astype(bool)]
+    return [
+        (observed.loc[observed["cohort"].eq("decoys")], config.COLOR_DECOY, "decoys"),
+        (observed.loc[observed["cohort"].eq("actives")], config.COLOR_ACTIVE, "actives"),
+    ]
+
+
+def size_dependence_static(frame: pd.DataFrame, score_direction: str) -> plt.Figure:
+    with _mpl_style():
+        fig, ax = plt.subplots()
+        for subset, color, name in _observed_by_cohort(frame):
+            ax.scatter(
+                subset["heavy_atoms"], subset["score"], s=6, color=color,
+                alpha=0.5, edgecolors="none", rasterized=True, label=name,
+            )
+        ax.set(
+            xlabel="Heavy atom count",
+            ylabel=_score_label(score_direction),
+            title="Docking score vs molecular size",
+        )
+        ax.legend(frameon=False, markerscale=2.5)
+        fig.tight_layout()
+    return fig
+
+
+def size_dependence_interactive(frame: pd.DataFrame, score_direction: str) -> go.Figure:
+    fig = go.Figure()
+    for subset, color, name in _observed_by_cohort(frame):
+        fig.add_trace(go.Scattergl(
+            x=subset["heavy_atoms"], y=subset["score"], mode="markers", name=name,
+            marker=dict(color=color, size=5, opacity=0.6),
+            customdata=subset["molecule_id"].astype(str).to_numpy(),
+            hovertemplate=(
+                "%{customdata}<br>heavy atoms %{x}"
+                "<br>score %{y:.4f} kcal/mol<extra></extra>"
+            ),
+        ))
+    return _style_plotly(
+        fig, "Docking score vs molecular size", "Heavy atom count",
+        _score_label(score_direction),
+    )
+
+
 def comparison_bar_static(table: pd.DataFrame, metrics_to_plot=("auc", "bedroc", "ef_1pct", "ef_5pct")) -> plt.Figure:
     columns = [m for m in metrics_to_plot if m in table.columns]
     if not columns:
