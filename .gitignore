@@ -228,3 +228,13 @@ data/external/
 
 # Large cluster scratch bundles and per-chunk pose files
 results/hpc_work/
+
+docs/
+# Local working status doc (superseded by docs/)
+PROJECT_STATUS_2026-07-20.md
+
+# Local smoke / box-tuning runs — not part of the scientific record
+results/smoke_5x250/
+results/smoke_5x250_2026-07-27_200722_174134Z/
+results/10x30_smoke_run_10A_smaller_box/
+results/10x30_smoke_run_10A_smaller_box_2026-07-28_181332_576010Z/
