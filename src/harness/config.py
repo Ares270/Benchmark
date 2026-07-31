@@ -17,7 +17,7 @@ RECEPTOR_PDBQT = TARGET_DIR / "7O7K_protein.pdbqt"
 # ── Docking box ──────────────────────────────────────────────────────────
 # From the native-ligand (6ZV / abemaciclib) binding site in 7O7K.
 BOX_CENTER = (8.631, 17.703, 24.730)   # (x, y, z) Angstrom
-BOX_SIZE   = (40.0, 38.0, 45.0)        # (x, y, z) Angstrom
+BOX_SIZE   = (30.0, 28.0, 35.0)        # (x, y, z) Angstrom
 
 # ── Smina search parameters ──────────────────────────────────────────────
 EXHAUSTIVENESS = 8      

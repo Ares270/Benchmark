@@ -32,6 +32,65 @@ except ImportError:
 
 
 
+####  Configuration recorded at execution time  ####
+
+HARNESS_CONFIG_SCHEMA_VERSION = "1"
+
+# dock_one() invokes smina without --scoring or --custom_scoring, so smina's
+# built-in default term set is used. Recorded explicitly, because a scores.csv
+# is meaningless without knowing which function produced the numbers.
+SCORING_FUNCTION = "vina"
+
+
+def smina_version() -> str | None:
+    """First line of ``smina --version``; None when smina cannot report one."""
+
+    try:
+        proc = subprocess.run(
+            ["smina", "--version"], capture_output=True, text=True,
+            timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = (proc.stdout or proc.stderr).strip().splitlines()
+    return lines[0].strip() if lines else None
+
+
+def harness_config_record(workers: int) -> dict:
+    """The configuration actually in effect for this docking invocation.
+
+    Written into _dock_summary.json so a later analysis can state which box,
+    receptor, and search settings produced a scores.csv instead of reading a
+    mutable config.py long after the fact. A value that genuinely cannot be
+    determined is omitted; no placeholder is ever substituted.
+    """
+
+    record: dict = {
+        "schema_version": HARNESS_CONFIG_SCHEMA_VERSION,
+        "receptor_path": str(config.RECEPTOR_PDBQT.resolve()),
+    }
+    if config.RECEPTOR_PDBQT.is_file():
+        record["receptor_sha256"] = runtime.sha256_file(config.RECEPTOR_PDBQT)
+    record.update(
+        {
+            "box_center": list(config.BOX_CENTER),
+            "box_size": list(config.BOX_SIZE),
+            "exhaustiveness": config.EXHAUSTIVENESS,
+            "seed": config.SEED,
+            "num_modes": config.NUM_MODES,
+            "cpu_per_job": config.SMINA_CPU,
+            "num_workers": workers,
+        }
+    )
+    version = smina_version()
+    if version is not None:
+        record["smina_version"] = version
+    record["scoring_function"] = SCORING_FUNCTION
+    return record
+
+
+
+
 #########    Open Output File, Read Affinity    ###########
 
 def parse_affinity(pose_pdbqt: Path):                           # function called twice
@@ -224,6 +283,7 @@ def dock_batch(ligand_dir: Path, out_dir: Path, scores_csv: Path,         # 4 In
             "energy_range_kcal_mol": config.ENERGY_RANGE,
             "timeout_seconds_per_ligand": config.DOCK_TIMEOUT_S,
         },
+        "harness_config": harness_config_record(workers),
         "timing": stage_timing,
         "hardware": runtime.hardware_record(),
     }
