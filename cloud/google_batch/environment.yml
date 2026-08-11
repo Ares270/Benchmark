@@ -1,0 +1,12 @@
+name: base
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10.20
+  - numpy=1.26.4
+  - rdkit=2023.09.6
+  - smina=2020.12.10
+  - pip
+  - pip:
+      - meeko==0.7.1
+      - gemmi==0.7.5
