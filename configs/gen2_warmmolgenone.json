@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "status": "registered_design_locked; implementation_validated_2026-08-10",
+  "runtime": {
+    "python": "3.10",
+    "torch": "2.5.0",
+    "transformers": "4.46.3",
+    "tokenizers": "0.20.3",
+    "huggingface_hub": "0.26.5",
+    "safetensors": "0.4.5"
+  },
+  "arm": {
+    "name": "gen2_warmmolgenone_v1",
+    "generation": 2,
+    "target_aware": true,
+    "conditioning": "protein_sequence",
+    "local_training_or_fine_tuning": false
+  },
+  "model": {
+    "repository": "gokceuludogan/WarmMolGenOne",
+    "revision": "1cbaeb72ba926f070c8f10349e9ee7041083135a",
+    "license": "MIT",
+    "weights_file": "pytorch_model.bin",
+    "weights_bytes": 766604630,
+    "weights_sha256": "f3e70473077cb286b0a6575453fec050be6691ad74788a8923bbeec327500b3c",
+    "artifacts": {
+      "config.json": {
+        "bytes": 4208,
+        "sha256": "a653cf38c66ae7218ac1d9527311163efed86f9397c1dc6c9ee517e3ebbacbf0"
+      },
+      "merges.txt": {
+        "bytes": 56686,
+        "sha256": "36219bdad178e65a04ef176f480313a4cbacf7c3b4d998175ce4b777e3e90141"
+      },
+      "tokenizer_config.json": {
+        "bytes": 119,
+        "sha256": "e3cac9b241db1cfb670e963f0f2c39a8bfdba0d1bc29763cc8d42f94a3b31abc"
+      },
+      "vocab.json": {
+        "bytes": 118317,
+        "sha256": "39814d8aa5dc130964330991108c948cce72f139b427f6f8bfaa3639caf5a2f5"
+      }
+    },
+    "architecture": "EncoderDecoderModel: 12-layer protein RoBERTa encoder and 6-layer ChemBERTa decoder, hidden size 768",
+    "training_universe": "Filtered BindingDB interacting protein-compound pairs; no target-disjoint claim"
+  },
+  "tokenizers": {
+    "protein": {
+      "repository": "gokceuludogan/WarmMolGenOne",
+      "revision": "1cbaeb72ba926f070c8f10349e9ee7041083135a"
+    },
+    "smiles": {
+      "repository": "seyonec/PubChem10M_SMILES_BPE_450k",
+      "revision": "c18fccd09b3326bf2d4633412c256d7db872156d",
+      "artifacts": {
+        "merges.txt": {
+          "bytes": 101307,
+          "sha256": "711b94fe4512ea656c3e849b9cbad47033bcc9521e0042bad5bf807d7d990020"
+        },
+        "special_tokens_map.json": {
+          "bytes": 772,
+          "sha256": "c611b1f7d416eb001ee4f293d903ea8c88e703463f1d403f1866a0352743fd00"
+        },
+        "tokenizer_config.json": {
+          "bytes": 62,
+          "sha256": "359fdd360be3de14228b56e2ca9c6c940ff0b1a3dc88a5bf32bdeeb21ec7be9c"
+        },
+        "vocab.json": {
+          "bytes": 164540,
+          "sha256": "f1e78bee7d674f970495446b3ec0f44ab8e1e4620d2172638c247d1645ba89d1"
+        }
+      }
+    }
+  },
+  "target": {
+    "name": "human DYRK1A kinase domain",
+    "uniprot_accession": "Q13627",
+    "uniprot_residue_range_inclusive": [127, 485],
+    "structure": "PDB 7O7K chains A and B",
+    "source_file": "data/target/7O7K.pdb",
+    "source_records": "DBREF and chain A SEQRES",
+    "deposited_sequence_length": 361,
+    "input_sequence_length": 359,
+    "transformations": [
+      "remove the two N-terminal expression residues SER MET",
+      "represent crystallographic PTR as canonical amino-acid Y"
+    ],
+    "sequence": "SSHKKERKVYNDGYDDDNYDYIVKNGEKWMDRYEIDSLIGKGSFGQVVKAYDRVEQEWVAIKIIKNKKAFLNQAQIEVRLLELMNKHDTEMKYYIVHLKRHFMFRNHLCLVFEMLSYNLYDLLRNTNFRGVSLNLTRKFAQQMCTALLFLATPELSIIHCDLKPENILLCNPKRSAIKIVDFGSSCQLGQRIYQYIQSRFYRSPEVLLGMPYDLAIDMWSLGCILVEMHTGEPLFSGANEVDQMNKIVEVLGIPPAHILDQAPKARKFFEKLPDGTWNLKKTKDGKREYKPPGTRKLHNILGVETGGPGGRRAGESGHTVADYLKFKDLILRMLDYDPKTRIQPYYALQHSFFKKTADE",
+    "sequence_utf8_lf_sha256": "11706976c027b024c3cd1369126cf48c8076218972d1f6f15dcdd0fdb4d7d84a"
+  },
+  "sampling": {
+    "seed": 20260801,
+    "raw_samples": 10000,
+    "docking_subsample": 1000,
+    "batch_size": 16,
+    "do_sample": true,
+    "temperature": 1.0,
+    "top_k": 50,
+    "top_p": 0.95,
+    "num_beams": 1,
+    "max_length_decoder_tokens": 128,
+    "screening_selection": "uniform rows without replacement before intake",
+    "validity_filtering": false,
+    "deduplication": false,
+    "replacement_or_top_up": false
+  },
+  "information_boundary": {
+    "provided_to_generator": ["the locked target protein sequence"],
+    "not_provided_to_generator": [
+      "DYRK1A active ligands",
+      "decoys or measured inactives",
+      "the receptor coordinates or docking box",
+      "Smina scores",
+      "pre-docking gate outcomes"
+    ]
+  },
+  "published_split_audit": {
+    "supplement": "WarmMol data.zip, Zenodo record 6832146",
+    "supplement_bytes": 252873943,
+    "supplement_md5": "161a7ebde6ef43c5d621052c126be1c3",
+    "finding": "Q13627 occurs in BindingDB_1chain_proteins_all.csv metadata; no row beginning Q13627 was found in the supplied train_interactions.csv, val_interactions.csv, or test_interactions.csv",
+    "interpretation_limit": "This is not a claim of target-disjoint training; related proteins and kinase chemistry remain in the learned prior."
+  }
+}
