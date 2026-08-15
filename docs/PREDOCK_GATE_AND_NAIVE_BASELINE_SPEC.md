@@ -3,13 +3,13 @@
 **Project:** DYRK1A Generative Benchmark
 **Repo:** `~/projects/Benchmark/`
 **Spec written:** 2026-07-30
-**Status:** DECISIONS LOCKED. Implementation not started.
-**Audience:** the implementing agent (Claude Code) — and the author, who must be able
-to defend every constant in this document without reading the code.
+**Status:** decisions locked 2026-07-30, before any arm generated a molecule.
+Implementation completed 2026-07-30; constants unchanged since.
+**Scope:** this document records the constants and their derivation. Every value here is defensible without reference to the implementation.
 
 ---
 
-## 0. Read this before writing a line
+## 0. Scope and governing rules
 
 This document specifies **two** deliverables:
 
@@ -21,7 +21,7 @@ This document specifies **two** deliverables:
 The gate is the more important of the two. It is the single point where a fairness
 mistake contaminates all four arms simultaneously and silently.
 
-**Two rules govern every decision below. If a proposed change violates either, reject it.**
+**Two rules govern every decision below. No constant below violates either rule.**
 
 > **Rule 1 — You cannot filter on a metric you intend to report.**
 > QED, SA score, Lipinski compliance, PAINS flags, molecular weight, TPSA and every
@@ -46,7 +46,7 @@ The gate handles exactly one of these. Confusing the tiers is the primary failur
 | Tier | Name | Cause | Owner | Judgment involved |
 | --- | --- | --- | --- | --- |
 | **0** | Intake failure | RDKit cannot parse/sanitize; duplicate parent | `src/harness/intake.py` (exists) | none |
-| **1** | **Instrument range** | Outside Smina's valid operating range | **`src/generation/filter.py` (BUILD THIS)** | minimal, derived |
+| **1** | **Instrument range** | Outside Smina's valid operating range | **`src/generation/filter.py` *(exists)* | minimal, derived |
 | **2** | Preparation failure | No 3D embed; Meeko cannot write PDBQT | `src/harness/prepare_ligands.py` (exists) | none |
 | **3** | Docking failure | Smina crash, timeout, no score | `src/harness/dock.py` (exists) | none |
 
@@ -80,7 +80,7 @@ Therefore:
 
 ### 3.1 Locked constants
 
-Create `src/generation/filter_config.py` containing exactly this and nothing else:
+The gate constants are defined in src/generation/filter_config.py:
 
 ```python
 """Pre-dock instrument-range gate. Constants derived 2026-07-30 from the 1,219
@@ -130,7 +130,7 @@ format hard-caps at 32 torsions. A ~15-torsion ceiling sits well inside the regi
 the configured search effort still explores conformational space adequately. This bound
 is therefore justified twice — by the actives *and* by the instrument.
 
-**Note on the target's character (do not skip):** median 25 heavy atoms, median MW ~357 Da.
+**Note on the target's character:** median 25 heavy atoms, median MW ~357 Da.
 DYRK1A's known chemistry is dominated by small, flat, hinge-binding scaffolds (harmine,
 indirubins, INDY). This is a **small-ligand target**. Diffusion models pretrained on
 CrossDocked2020 — which contains many larger pockets — will routinely emit 50–60
@@ -192,10 +192,9 @@ def apply_gate(records, config_module) -> GateResult
   no flags that alter thresholds. There is no `--relaxed` option. If a caller could
   change the gate's behaviour per arm, the gate is not a fair gate.
 
-### 3.4 Known weaknesses — state these in the docstring, do not hide them
+### 3.4 Known weaknesses
 
-An honest module documents its own soft spots. Write these into `filter.py`'s
-module docstring:
+An honest module documents its own soft spots. These are recorded in filter.py's module docstring.
 
 1. **Rule 1 is bent, not obeyed, for size.** Heavy-atom count correlates strongly
    (ρ ≈ 0.95) with molecular weight, which *is* a reported property. Filtering on size
@@ -216,9 +215,7 @@ module docstring:
    qualitative statement is uncontroversial; a citable quantitative source has not yet
    been recorded. Add it to the open-items list.
 
-### 3.5 Explicitly forbidden — do not implement any of these
-
-If a future prompt asks for one of these, refuse and point at this section.
+### 3.5 Deliberately excluded. The gate implements none of the following, by design:
 
 - ❌ QED, SA score, or any drug-likeness threshold
 - ❌ Lipinski / Veber / Rule-of-Three filters
@@ -308,20 +305,15 @@ size and lipophilicity range*.
 **Source: the ChEMBL bulk SMILES release** (`chembl_<version>_chemreps.txt.gz` from the
 ChEMBL FTP `latest/` directory).
 
-Do **not** hardcode a version number. Resolve whatever `latest/` currently serves, then
-record the resolved filename, version string, download URL, and SHA-256 in `summary.json`.
-Follow the established pattern in `src/utils/fetch_dude_decoys.py`: download raw, keep raw,
-normalize separately, hash everything, record the citation.
+The version is resolved at download time rather than hardcoded: whatever `latest/`
+serves is recorded by resolved filename, version string, download URL, and SHA-256
+in `summary.json`. This follows the established pattern in
+`src/utils/fetch_dude_decoys.py` — download raw, keep raw, normalize separately,
+hash everything, record the citation.
 
-Why ChEMBL over ZINC: the actives came from ChEMBL, so the property space is directly
-comparable; and REINVENT's prior is ChEMBL-trained, which sharpens the gen2 question to
-*"did reinforcement learning find anything its own training distribution did not already
-contain?"*
+Why ChEMBL: the DYRK1A actives were drawn from ChEMBL, so the baseline occupies directly comparable property space.
 
-**Caveat that must appear in the baseline's `interpretation` block and in the paper's
-limitations:** this baseline is a **chemical-space control, not a training-set holdout.**
-REINVENT's prior saw ChEMBL; MOSES-family gen1 models saw ZINC. A true holdout library
-unavailable to all three models remains an open project decision.
+Caveat, which appears in the baseline's interpretation block and in the paper's limitations: this is a chemical-space control, not a training-set holdout. Gen1 (GuacaMol SMILES-LSTM) was trained on ChEMBL 24. Gen2 (WarmMolGenOne) and Gen3 (Molexar 10M Omni) have no complete authenticated training index available, so target disjointness is not claimed for either. A holdout library unavailable to all three models remains an open decision.
 
 **Therefore: make the source swappable.** `--source-file` takes a path plus a required
 `--source-description` string, both recorded. When a holdout library is chosen later, the
@@ -387,14 +379,14 @@ resemble known DYRK1A chemistry would handicap the baseline in precisely the dir
 that flatters the generative models. If the reimplementation contains a similarity
 threshold anywhere, it is wrong.
 
-### 5.5 Build fresh — do not import from `select_decoys.py`
+### 5.5 Independent implementation from select_decoys.py
 
 Rebuild the matching logic in `naive_baseline.py`. Reasons:
 
 - Different objective: distribution matching vs. per-active quota.
 - Different uniqueness semantics: global unique set vs. bipartite assignment.
 - The topology gate must be **absent**, and parameterizing `select_decoys.py` with a flag
-  that disables its own scientific safeguard is a trap waiting for a future maintainer.
+  that disables its own scientific safeguard is a hazard for future maintenance.
 
 **Guard the duplication with a test instead of shared code:** assert that the per-property
 standard deviations computed by `naive_baseline.py` match the `matching_scales` recorded in
@@ -469,10 +461,9 @@ Keep the three metric buckets separate, as established earlier in the project:
 
 ---
 
-## 7. Tests — required before either module is considered done
+## 7. Tests. The following properties are asserted in tests/
 
-Add to `tests/`, matching existing `unittest` conventions
-(`python -m unittest discover -s tests -t .`; pytest is not installed).
+
 
 **`tests/test_generation_filter.py`**
 1. A molecule at each bound is admitted; one atom / one torsion past each bound is rejected
@@ -512,20 +503,24 @@ Add to `tests/`, matching existing `unittest` conventions
 
 ---
 
-## 8. Pre-registration — do this before generating anything
+## 8. Pre-registration procedure followed
 
 The order is the point. A filter written after seeing results is not a filter, it is a
 knob.
 
-1. Implement Part A. Run the tests. Confirm all 1,219 actives pass the derived
+1. Part A was implemented. The tests were run. Confirmed all 1,219 actives passed the derived
    size and torsion bounds, and that only the two pre-declared silicon actives
-   fail the complete gate.
-2. Commit `filter_config.py`, `filter.py`, this spec (into `docs/`), and the tests.
-3. **Tag the commit:** `git tag -a predock-gate-v1 -m "Pre-dock gate constants frozen before any generative arm sampling"`
-4. Only then implement Part B and generate molecules.
-5. Every downstream run records `filter_config.py`'s SHA-256 in its `run_log.json`.
+   failed the complete gate.
+2. Committed `filter_config.py`, `filter.py`, this spec (into `docs/`), and the tests.
+3. That commit was tagged `predock-gate-v1` ("Pre-dock gate constants frozen before
+   any generative arm sampling"). The tag is the timestamp evidence: it can be
+   verified against the repository history without taking the author's word for it.
+4.  Only then was Part B implemented and molecules generated.
+5. Every downstream run records `filter_config.py`'s SHA-256 in its `run_log.json`,
+   so any result can be traced to the exact constants that produced it.
 
-The git timestamp then proves the gate predates every result, which converts *"trust me,
+   
+The git timestamp proves the gate predates every result, which converts *"trust me,
 I didn't tune this"* into evidence. Same provenance machinery already used for docking,
 applied one layer up.
 
