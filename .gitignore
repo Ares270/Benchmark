@@ -223,6 +223,9 @@ CLAUDE.md
 # Windows alternate data stream metadata copied into WSL
 *:Zone.Identifier
 
+# Local pretrained checkpoints and miscellaneous large artifacts
+Models & Miscellaneous/
+
 # Re-downloadable public source corpora (scripts and hashes stay versioned)
 data/external/
 
@@ -230,6 +233,9 @@ data/external/
 results/hpc_work/
 
 docs/
+!docs/
+docs/*
+!docs/PREDOCK_GATE_AND_NAIVE_BASELINE_SPEC.md
 # Local working status doc (superseded by docs/)
 PROJECT_STATUS_2026-07-20.md
 
@@ -238,3 +244,7 @@ results/smoke_5x250/
 results/smoke_5x250_2026-07-27_200722_174134Z/
 results/10x30_smoke_run_10A_smaller_box/
 results/10x30_smoke_run_10A_smaller_box_2026-07-28_181332_576010Z/
+
+# Compute bundles
+*.tar.gz
+*.tar.gz.sha256
