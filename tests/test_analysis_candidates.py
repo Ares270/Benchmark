@@ -105,7 +105,12 @@ class CandidateAnalysisTests(unittest.TestCase):
             )
 
             self.assertTrue(report.is_file())
-            self.assertIn("AUC, BEDROC, and enrichment are deliberately not computed", report.read_text())
+            rendered = report.read_text()
+            self.assertIn("AUC, BEDROC, and enrichment are deliberately not computed", rendered)
+            self.assertIn("Candidate structure gallery", rendered)
+            self.assertIn("Top 2", rendered)
+            self.assertIn("Bottom 2", rendered)
+            self.assertIn("<svg", rendered)
             metrics = json.loads(
                 (report.parent / "metrics.json").read_text(encoding="utf-8")
             )

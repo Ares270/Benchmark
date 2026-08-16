@@ -32,6 +32,9 @@ from .chemistry import (
     _property_statistics,
 )
 from .dataset import AnalysisInputError, load_score_table
+from .interpretation import candidate_interpretation
+from .molecule_gallery import render_top_bottom_galleries
+from .report_theme import plotly_config, polish_plotly_figure, report_css, report_toolbar
 
 
 CANDIDATE_SCHEMA_VERSION = 1
@@ -267,6 +270,9 @@ def build_candidate_profile(
             ),
         },
     }
+    profile["interpretation"]["neutral_summary"] = candidate_interpretation(
+        profile
+    )
     return joined, profile
 
 
@@ -329,6 +335,7 @@ def _candidate_figures(joined: pd.DataFrame) -> tuple[str, str]:
     overview.update_yaxes(title_text="Count", row=1, col=1)
     overview.update_yaxes(title_text="Score (kcal/mol; lower is better)", row=1, col=2)
     overview.update_layout(height=430, showlegend=False, margin={"t": 55})
+    polish_plotly_figure(overview, height=430)
 
     properties = make_subplots(
         rows=3,
@@ -347,18 +354,19 @@ def _candidate_figures(joined: pd.DataFrame) -> tuple[str, str]:
             col=col,
         )
     properties.update_layout(height=840, margin={"t": 60})
+    polish_plotly_figure(properties, height=840)
     return (
         overview.to_html(
             full_html=False,
             include_plotlyjs=False,
             div_id="candidate-score-overview",
-            config={"displaylogo": False, "responsive": True},
+            config=plotly_config(),
         ),
         properties.to_html(
             full_html=False,
             include_plotlyjs=False,
             div_id="candidate-property-distributions",
-            config={"displaylogo": False, "responsive": True},
+            config=plotly_config(),
         ),
     )
 
@@ -412,15 +420,22 @@ def _render_report(joined: pd.DataFrame, profile: dict) -> str:
         if profile["computational_cost"] is not None
         else "No authenticated sibling docking-cost summary was available."
     )
+    neutral_summary = profile.get("interpretation", {}).get(
+        "neutral_summary", candidate_interpretation(profile)
+    )
+    gallery = render_top_bottom_galleries(joined, n=10)
+    toolbar = report_toolbar(f"{profile['name']} candidate analysis")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(profile['name'])} candidate analysis</title>
 <script>{get_plotlyjs()}</script>
-<style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:1200px;margin:auto;padding:28px 20px 60px;background:#f8fafc;color:#1f2937}}.card{{background:white;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:16px 0}}.metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}.metric{{background:#eff6ff;border-radius:10px;padding:12px}}.metric strong{{display:block;font-size:1.35rem}}table.data{{border-collapse:collapse;width:100%}}table.data th,table.data td{{border:1px solid #e5e7eb;padding:7px 9px;text-align:right}}table.data th:first-child,table.data td:first-child{{text-align:left}}code{{background:#e2e8f0;padding:2px 5px;border-radius:4px}}</style></head>
-<body><h1>{html.escape(profile['name'])}: candidate-only analysis</h1>
+<style>{report_css()}</style></head>
+<body>{toolbar}<h1>{html.escape(profile['name'])}: candidate-only analysis</h1>
 <p>Role: <strong>{html.escape(profile['role'])}</strong>. This cohort has no active/decoy labels, so AUC, BEDROC, and enrichment are deliberately not computed. Docking prioritizes candidates; it does not prove biochemical activity.</p>
 <div class="metrics"><div class="metric">Submitted<strong>{intake['submitted_rows']:,}</strong></div><div class="metric">Validity<strong>{100*intake['validity']:.2f}%</strong></div><div class="metric">Parent uniqueness<strong>{100*intake['parent_uniqueness']:.2f}%</strong></div><div class="metric">Accepted<strong>{intake['accepted_for_preparation']:,}</strong></div><div class="metric">Docking coverage<strong>{100*docking['coverage_over_accepted_parents']:.2f}%</strong></div><div class="metric">Median score<strong>{distribution['median']:.3f}</strong>kcal/mol</div></div>
+<div class="card"><strong>Neutral interpretation</strong><p>{html.escape(str(neutral_summary))}</p></div>
 <div class="card">{overview_div}</div>
+{gallery}
 <h2>Evaluated-parent chemistry</h2><p>All properties remain separate; no composite molecular-quality score is created.</p><div class="card">{property_table}</div><div class="card">{property_div}</div>
 <h2>Top 20 observed docking scores</h2><p>Lower is better. QED and SA are shown beside docking, not folded into it.</p><div class="card">{top_table}</div>
 <h2>Computational cost</h2><p>{html.escape(cost_note)}</p>

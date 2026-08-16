@@ -95,6 +95,8 @@ class GenerationNaiveBaselineTests(unittest.TestCase):
 
     def _write_source(self, root: Path) -> Path:
         path = root / "chembl_99_chemreps.txt.gz"
+        if path.exists():
+            return path
         with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
             handle.write(
                 "chembl_id\tcanonical_smiles\tstandard_inchi\t"

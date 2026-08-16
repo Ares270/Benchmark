@@ -229,8 +229,13 @@ Models & Miscellaneous/
 # Re-downloadable public source corpora (scripts and hashes stay versioned)
 data/external/
 
-# Large cluster scratch bundles and per-chunk pose files
-results/hpc_work/
+# Run outputs — bulk artifacts are regenerable and huge.
+# results/* (contents), not results/ (directory), so the negation below is reachable.
+results/*
+!results/run_history.csv
+
+# Generated cohorts — regenerable from seed + ChEMBL 37 hash, and there will be far more.
+data/generated/
 
 docs/
 !docs/
@@ -240,6 +245,7 @@ docs/*
 PROJECT_STATUS_2026-07-20.md
 
 # Local smoke / box-tuning runs — not part of the scientific record
+results/hpc_work/
 results/smoke_5x250/
 results/smoke_5x250_2026-07-27_200722_174134Z/
 results/10x30_smoke_run_10A_smaller_box/

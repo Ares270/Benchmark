@@ -469,6 +469,13 @@ def run_chunk(
         "scheduler": {
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
             "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
+            "google_batch_job_name": os.environ.get("BENCH_JOB_NAME"),
+            "google_batch_task_index": os.environ.get("BATCH_TASK_INDEX"),
+            "google_batch_task_count": os.environ.get("BATCH_TASK_COUNT"),
+            "google_batch_retry_attempt": os.environ.get(
+                "BATCH_TASK_RETRY_ATTEMPT"
+            ),
+            "container_image_uri": os.environ.get("BENCH_IMAGE_URI"),
         },
         "hardware": runtime.hardware_record(),
     }

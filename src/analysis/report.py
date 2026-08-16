@@ -9,6 +9,8 @@ from jinja2 import Environment
 from markupsafe import Markup
 from plotly.offline import get_plotlyjs
 
+from .report_theme import plotly_config, polish_plotly_figure, report_css, report_toolbar
+
 
 PLOT_LAYOUT = [
     ("roc", "ROC curve", "Global ranking discrimination; ties are handled as score thresholds."),
@@ -68,17 +70,7 @@ class HarnessConfigurationMismatch(RuntimeError):
 
 _TEMPLATE = Environment(autoescape=True).from_string(r"""
 <div class="report">
-<style>
-  .report{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2937;max-width:1100px;margin:0 auto;padding:24px 20px 60px;line-height:1.5}
-  .report h1{font-size:1.7rem;margin:0 0 4px}.report h2{font-size:1.15rem;margin:34px 0 12px;padding-bottom:6px;border-bottom:1px solid #e5e7eb}
-  .sub,.note{color:#6b7280;font-size:.88rem}.tiles{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0 6px}
-  .tile{flex:1 1 145px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-  .label{font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;color:#6b7280}.value{font-size:1.45rem;font-weight:650;color:#111827;margin-top:2px}.ci{font-size:.75rem;color:#6b7280}
-  table.kv{border-collapse:collapse;width:100%;font-size:.88rem;background:#fff;border:1px solid #e5e7eb}table.kv th,table.kv td{text-align:left;padding:9px 12px;border-bottom:1px solid #f0f1f3}table.kv th{background:#f9fafb}.num{text-align:right!important;font-variant-numeric:tabular-nums}
-  .plotcard{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px 4px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .cap{color:#6b7280;font-size:.83rem;margin:2px 4px 8px}.warning{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;font-size:.86rem}.foot{margin-top:40px;font-size:.8rem;color:#6b7280}.foot code{word-break:break-all;background:#f3f4f6;padding:1px 5px;border-radius:4px}
-  table.kv td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.76rem;word-break:break-all}
-</style>
+{{ toolbar }}
 
 <h1>DYRK1A docking benchmark — {{ meta.name }}</h1>
 <p class="sub">{{ meta.timestamp_iso }} · {{ audit.n_analyzed_actives }} actives · {{ audit.n_analyzed_decoys }} benchmark decoys · missing policy: <strong>{{ audit.missing_policy }}</strong></p>
@@ -282,9 +274,10 @@ def _size_correlation_rows(size: dict | None) -> list[dict[str, Any]]:
 
 
 def _fig_to_div(key: str, figure: go.Figure) -> Markup:
+    polish_plotly_figure(figure)
     return Markup(figure.to_html(
         full_html=False, include_plotlyjs=False, div_id=f"plot-{key}",
-        config={"displaylogo": False, "responsive": True},
+        config=plotly_config(),
     ))
 
 
@@ -326,6 +319,7 @@ def render_report(
     )
     body = _TEMPLATE.render(
         meta=meta,
+        toolbar=Markup(report_toolbar("Labelled validation report")),
         metric_rows=metric_rows,
         confidence_label=confidence_label,
         stats=stats,
@@ -349,5 +343,5 @@ def render_report(
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>DYRK1A benchmark — {title}</title><script>{get_plotlyjs()}</script>"
-        f"</head><body style='margin:0;background:#f8fafc'>{body}</body></html>"
+        f"<style>{report_css()}</style></head><body>{body}</body></html>"
     )

@@ -15,6 +15,7 @@ from plotly.offline import get_plotlyjs
 
 from . import plots
 from .chemistry import PROPERTY_COLUMNS, PROPERTY_LABELS
+from .report_theme import plotly_config, polish_plotly_figure, report_css, report_toolbar
 
 COMPARE_METRICS = ("auc", "bedroc", "ef_1pct", "ef_5pct", "ef_10pct")     # THIS is the whitelist, nothing else matters
 
@@ -118,9 +119,10 @@ def render_comparison(
     chemistry_table: pd.DataFrame | None = None,
 ) -> Path:
     figure = plots.comparison_bar_interactive(table, metrics_to_plot=COMPARE_METRICS)           # take table from previous run
+    polish_plotly_figure(figure)
     figure_div = figure.to_html(                                                                # draws the grouped bar chart from it
         full_html=False, include_plotlyjs=False, div_id="comparison-bars",                      # formats it into HTML
-        config={"displaylogo": False, "responsive": True},
+        config=plotly_config(),
     )
     formatted = table.map(lambda value: f"{value:.4g}")
     table_html = formatted.to_html(border=0, classes="comparison", justify="center", escape=True)
@@ -129,11 +131,12 @@ def render_comparison(
         chemistry_figure = plots.chemical_mean_comparison_interactive(
             chemistry_table
         )
+        polish_plotly_figure(chemistry_figure)
         chemistry_figure_div = chemistry_figure.to_html(            ##### NEW CHEMISTRY PLOT
             full_html=False,                                            # When chemistry exists, it additionally draws:
             include_plotlyjs=False,                                     # -A table of mean properties
             div_id="chemistry-comparison-bars",                         # -Twelve separate bar-chart panels
-            config={"displaylogo": False, "responsive": True},
+            config=plotly_config(),
         )
         chemistry_formatted = chemistry_table.rename(
             columns=PROPERTY_LABELS
@@ -148,11 +151,12 @@ def render_comparison(
             f"<div class='card'>{chemistry_table_html}</div>"
             f"<div class='card'>{chemistry_figure_div}</div>"
         )
+    toolbar = report_toolbar("Labelled method comparison")
     html = f"""<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>DYRK1A method comparison</title><script>{get_plotlyjs()}</script>
-<style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;max-width:1100px;margin:0 auto;padding:28px 20px 60px;background:#f8fafc}}table.comparison{{border-collapse:collapse;width:100%;background:#fff}}table.comparison th,table.comparison td{{padding:9px 14px;border:1px solid #e5e7eb;text-align:center}}.card{{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;margin:16px 0}}</style></head>
-<body><h1>DYRK1A method comparison</h1><p>Each metric has its own vertical scale; EF and AUC are not plotted on one misleading axis.</p><div class='card'>{table_html}</div><div class='card'>{figure_div}</div>{chemistry_section}</body></html>"""
+<style>{report_css()}</style></head>
+<body>{toolbar}<h1>DYRK1A method comparison</h1><p>Each metric has its own vertical scale; EF and AUC are not plotted on one misleading axis.</p><div class='card'>{table_html}</div><div class='plotcard'>{figure_div}</div>{chemistry_section}<div class='foot'>Every metric remains separate. This report does not calculate an overall winner score.</div></body></html>"""
     out_html = Path(out_html)
     out_html.parent.mkdir(parents=True, exist_ok=True)
     temporary = out_html.with_name(f".{out_html.name}.tmp")

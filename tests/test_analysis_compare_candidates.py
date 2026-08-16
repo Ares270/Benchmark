@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from src.analysis.chemistry import PROPERTY_COLUMNS
 from src.analysis.compare_candidates import (
     CandidateComparisonError,
@@ -109,6 +111,25 @@ class CandidateComparisonTests(unittest.TestCase):
                 "budgets differ",
             ):
                 build_candidate_comparison(paths)
+
+    def test_complete_rankings_enable_distribution_and_chemistry_views(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = self._files(root)
+            pd.DataFrame(
+                {
+                    "molecule_id": ["m1", "m2"],
+                    "parent_smiles": ["CCO", "c1ccccc1"],
+                    "score": [-8.0, -6.0],
+                }
+            ).to_csv(root / "ranked_candidates.csv", index=False)
+            report = write_candidate_comparison(paths, root / "comparison")
+            rendered = report.read_text(encoding="utf-8")
+            self.assertIn("Observed docking-score distributions", rendered)
+            self.assertIn('"type":"box"', rendered)
+            self.assertIn("Pipeline survival", rendered)
+            self.assertIn("Chemistry quick reference", rendered)
+            self.assertIn("No composite score or automatic winner", rendered)
 
 
 if __name__ == "__main__":

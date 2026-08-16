@@ -29,6 +29,20 @@ def write_smi(path: Path, pairs) -> Path:
 
 
 class HarnessConfigCaptureTests(unittest.TestCase):
+    def test_smina_resolution_falls_back_to_active_python_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            env_bin = Path(temporary) / "bin"
+            env_bin.mkdir()
+            python_path = env_bin / "python"
+            smina_path = env_bin / "smina"
+            smina_path.write_text("fixture", encoding="utf-8")
+            with (
+                mock.patch.object(dock.shutil, "which", return_value=None),
+                mock.patch.object(dock.sys, "executable", str(python_path)),
+            ):
+                resolved = dock.resolve_smina_executable()
+        self.assertEqual(resolved, str(smina_path))
+
     def test_record_describes_the_configuration_in_effect(self):
         record = dock.harness_config_record(workers=3)
         self.assertEqual(record["schema_version"], "1")

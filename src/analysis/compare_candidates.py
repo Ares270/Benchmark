@@ -24,6 +24,9 @@ from plotly.subplots import make_subplots
 from src.harness import runtime
 
 from .chemistry import PROPERTY_COLUMNS, PROPERTY_LABELS
+from .interpretation import comparison_interpretation
+from .molecule_gallery import molecule_svg
+from .report_theme import plotly_config, polish_plotly_figure, report_css, report_toolbar
 
 
 
@@ -195,16 +198,119 @@ def build_candidate_comparison(
     return runs, summary, chemistry, checks
 
 
+def _ranking_for_run(run: dict) -> pd.DataFrame | None:
+    """Load an already written ranking for richer presentation, when present."""
+
+    path = Path(run["_metrics_path"]).parent / "ranked_candidates.csv"
+    if not path.is_file():
+        return None
+    try:
+        ranking = pd.read_csv(path)
+    except (OSError, pd.errors.ParserError):
+        return None
+    required = {"molecule_id", "parent_smiles", "score"}
+    if not required.issubset(ranking.columns):
+        return None
+    ranking = ranking.loc[pd.to_numeric(ranking["score"], errors="coerce").notna()].copy()
+    ranking["score"] = pd.to_numeric(ranking["score"], errors="coerce")
+    return ranking.sort_values(["score", "molecule_id"], kind="stable")
+
+
+def _funnel_for_run(run: dict) -> dict[str, int]:
+    """Recover the durable pipeline funnel; use profile values as a fallback."""
+
+    docking_path = Path(str(run.get("docking", {}).get("path", "")))
+    pipeline_path = docking_path.parent.parent / "pipeline_summary.json"
+    if pipeline_path.is_file():
+        try:
+            record = json.loads(pipeline_path.read_text(encoding="utf-8"))
+            funnel = record.get("funnel", {})
+            return {
+                "Submitted": int(funnel["submitted"]),
+                "Intake": int(funnel["accepted_at_intake"]),
+                "Gate": int(funnel["passed_predock_gate"]),
+                "Prepared": int(funnel["prepared_pdbqt_available"]),
+                "Scored": int(funnel["successfully_scored"]),
+            }
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+    intake = run["intake"]
+    docking = run["docking"]
+    submitted = int(intake["submitted_rows"])
+    accepted = int(intake["accepted_for_preparation"])
+    scored = int(docking.get("n_with_observed_score", round(
+        submitted * float(docking["successful_per_submitted"])
+    )))
+    return {
+        "Submitted": submitted,
+        "Intake": accepted,
+        "Gate": accepted,
+        "Prepared": scored,
+        "Scored": scored,
+    }
+
+
+def _arm_cards(summary: pd.DataFrame) -> str:
+    cards = []
+    for method, row in summary.iterrows():
+        role = "Naive baseline" if row["role"] == "naive_baseline" else "Model arm"
+        cards.append(
+            '<article class="comparison-arm-card">'
+            f'<span class="eyebrow">{html.escape(role)}</span>'
+            f'<h3>{html.escape(str(method))}</h3>'
+            '<div class="comparison-score"><small>Median Smina</small>'
+            f'<strong>{row["score_median"]:.3f}</strong><span>kcal/mol</span></div>'
+            '<div class="comparison-arm-stats">'
+            f'<span><small>Valid</small>{100 * row["validity"]:.1f}%</span>'
+            f'<span><small>Unique</small>{100 * row["parent_uniqueness"]:.1f}%</span>'
+            f'<span><small>Scored</small>{100 * row["successful_per_submitted"]:.1f}%</span>'
+            f'<span><small>CPU-slot h</small>{row["estimated_cpu_slot_hours"]:.2f}</span>'
+            '</div></article>'
+        )
+    return '<div class="comparison-arm-grid">' + "".join(cards) + "</div>"
+
+
+def _representative_cards(runs: list[dict], rankings: dict[str, pd.DataFrame]) -> str:
+    cards = []
+    for run in runs:
+        ranking = rankings.get(run["name"])
+        if ranking is None or ranking.empty:
+            continue
+        row = ranking.iloc[0]
+        cards.append(
+            '<article class="molecule-card comparison-molecule">'
+            '<div class="molecule-card-head"><span class="molecule-edge best">Top observed</span>'
+            f'<span class="molecule-rank">{html.escape(run["name"])}</span></div>'
+            f'<div class="molecule-drawing">{molecule_svg(str(row["parent_smiles"]), width=245, height=155)}</div>'
+            f'<div class="molecule-id">{html.escape(str(row["molecule_id"]))}</div>'
+            f'<div class="molecule-score"><small>Smina</small>{float(row["score"]):.3f} <em>kcal/mol</em></div>'
+            '<p class="representative-note">Descriptive extreme only—not an activity claim.</p>'
+            '</article>'
+        )
+    if not cards:
+        return ""
+    return (
+        '<h2>Chemistry quick reference</h2>'
+        '<p>One top observed docked structure per arm. Full top-10 and bottom-10 galleries remain in each arm report.</p>'
+        '<div class="molecule-grid representative-grid">' + "".join(cards) + "</div>"
+    )
+
+
 def _render_comparison(
     runs: list[dict],
     summary: pd.DataFrame,
     chemistry: pd.DataFrame,
     checks: dict,
 ) -> str:
+    rankings = {
+        run["name"]: ranking
+        for run in runs
+        if (ranking := _ranking_for_run(run)) is not None
+    }
     quality = make_subplots(
         rows=1,
         cols=2,
-        subplot_titles=("Generation and screening yield", "Docking-score distribution summaries"),
+        subplot_titles=("Generation and screening yield", "Observed docking-score distributions"),
     )
     for column, label in (
         ("validity", "Validity"),
@@ -216,19 +322,57 @@ def _render_comparison(
             row=1,
             col=1,
         )
-    for column, label in (
-        ("score_p10", "10th percentile"),
-        ("score_median", "Median"),
-        ("score_mean", "Mean"),
-    ):
-        quality.add_trace(
-            go.Bar(x=summary.index, y=summary[column], name=label),
-            row=1,
-            col=2,
-        )
+    if len(rankings) == len(runs):
+        for color, run in zip(("#2563eb", "#0f766e", "#7c3aed", "#d97706"), runs):
+            ranking = rankings[run["name"]]
+            quality.add_trace(
+                go.Box(
+                    x=[run["name"]] * len(ranking),
+                    y=ranking["score"],
+                    name=run["name"],
+                    marker_color=color,
+                    boxpoints="outliers",
+                    showlegend=False,
+                    hovertemplate="%{y:.3f} kcal/mol<extra>%{x}</extra>",
+                ),
+                row=1,
+                col=2,
+            )
+    else:
+        for column, label in (
+            ("score_p10", "10th percentile"),
+            ("score_median", "Median"),
+            ("score_mean", "Mean"),
+        ):
+            quality.add_trace(
+                go.Bar(x=summary.index, y=summary[column], name=label),
+                row=1,
+                col=2,
+            )
     quality.update_yaxes(title_text="Percent of submitted", row=1, col=1)
     quality.update_yaxes(title_text="kcal/mol (lower is better)", row=1, col=2)
     quality.update_layout(height=480, barmode="group", margin={"t": 60})
+    polish_plotly_figure(quality, height=500)
+
+    funnel_figure = go.Figure()
+    for color, run in zip(("#2563eb", "#0f766e", "#7c3aed", "#d97706"), runs):
+        funnel = _funnel_for_run(run)
+        total = max(1, funnel["Submitted"])
+        funnel_figure.add_trace(
+            go.Scatter(
+                x=list(funnel),
+                y=list(funnel.values()),
+                customdata=[100 * value / total for value in funnel.values()],
+                name=run["name"],
+                mode="lines+markers",
+                line={"width": 3, "color": color},
+                marker={"size": 9},
+                hovertemplate="%{y:,} molecules · %{customdata:.1f}% of submitted<extra>%{fullData.name}</extra>",
+            )
+        )
+    funnel_figure.update_yaxes(title_text="Molecules remaining", rangemode="tozero")
+    funnel_figure.update_layout(height=430, margin={"t": 35})
+    polish_plotly_figure(funnel_figure, height=430)
 
     property_figure = make_subplots(
         rows=3,
@@ -247,16 +391,20 @@ def _render_comparison(
             col=position % 4 + 1,
         )
     property_figure.update_layout(height=900, margin={"t": 60})
+    polish_plotly_figure(property_figure, height=900)
 
-    display_summary = summary.rename(
+    display_summary = summary.copy()
+    for column in ("validity", "parent_uniqueness", "docking_coverage", "successful_per_submitted"):
+        display_summary[column] *= 100
+    display_summary = display_summary.rename(
         columns={
-            "validity": "Validity",
-            "parent_uniqueness": "Parent uniqueness",
+            "validity": "Validity (%)",
+            "parent_uniqueness": "Parent uniqueness (%)",
             "docking_coverage": "Docking coverage",
-            "successful_per_submitted": "Scored / submitted",
-            "score_p10": "Score p10",
-            "score_median": "Score median",
-            "score_mean": "Score mean",
+            "successful_per_submitted": "Scored / submitted (%)",
+            "score_p10": "Score p10 (kcal/mol)",
+            "score_median": "Score median (kcal/mol)",
+            "score_mean": "Score mean (kcal/mol)",
             "estimated_cpu_slot_hours": "Estimated CPU-slot h",
         }
     )
@@ -266,7 +414,45 @@ def _render_comparison(
         float_format=lambda value: f"{value:.4g}",
     )
     baseline = next(run for run in runs if run["role"] == "naive_baseline")
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DYRK1A candidate comparison</title><script>{get_plotlyjs()}</script><style>body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:1250px;margin:auto;padding:28px 20px 60px;background:#f8fafc;color:#1f2937}}.card{{background:white;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:16px 0}}table.data{{border-collapse:collapse;width:100%}}table.data th,table.data td{{border:1px solid #e5e7eb;padding:7px;text-align:right}}table.data th:first-child,table.data td:first-child{{text-align:left}}</style></head><body><h1>Three model generations versus naïve baseline</h1><p>All four runs submitted <strong>{checks['equal_submitted_molecule_budget']:,}</strong> raw molecules and used one identical receptor and scientific docking protocol. Invalids, duplicates, and docking failures remain visible. There is deliberately no overall winner score.</p><p><strong>Naïve baseline:</strong> {html.escape(str(baseline['source_description']))}</p><div class="card">{summary_table}</div><div class="card">{quality.to_html(full_html=False,include_plotlyjs=False,div_id='candidate-comparison-quality',config={'displaylogo':False,'responsive':True})}</div><h2>Mean evaluated-parent properties</h2><p>Each panel has its own units and scale. These properties are not collapsed into docking affinity.</p><div class="card">{property_figure.to_html(full_html=False,include_plotlyjs=False,div_id='candidate-comparison-properties',config={'displaylogo':False,'responsive':True})}</div></body></html>"""
+    toolbar = report_toolbar("Four-arm comparison")
+    quality_div = quality.to_html(
+        full_html=False, include_plotlyjs=False,
+        div_id="candidate-comparison-quality", config=plotly_config(),
+    )
+    property_div = property_figure.to_html(
+        full_html=False, include_plotlyjs=False,
+        div_id="candidate-comparison-properties", config=plotly_config(),
+    )
+    funnel_div = funnel_figure.to_html(
+        full_html=False, include_plotlyjs=False,
+        div_id="candidate-comparison-funnel", config=plotly_config(),
+    )
+    neutral = comparison_interpretation(summary.reset_index().to_dict("records"))
+    representative_cards = _representative_cards(runs, rankings)
+    comparison_css = """
+.protocol-banner{display:flex;align-items:center;gap:14px;margin:20px 0;padding:16px 18px;background:var(--teal-soft);border:1px solid #b8dcd6;border-radius:14px}.protocol-banner strong{color:var(--teal-dark)}
+.protocol-check{display:grid;place-items:center;flex:0 0 34px;height:34px;color:#fff;background:var(--teal);border-radius:50%;font-size:1.15rem}
+.comparison-arm-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin:20px 0}.comparison-arm-card{padding:17px;background:#fff;border:1px solid var(--line);border-top:4px solid var(--teal);border-radius:14px;box-shadow:var(--shadow-sm)}.comparison-arm-card:nth-child(2){border-top-color:var(--blue)}.comparison-arm-card:nth-child(3){border-top-color:#7c3aed}.comparison-arm-card:nth-child(4){border-top-color:#d97706}.comparison-arm-card h3{margin:5px 0 13px;overflow-wrap:anywhere}.eyebrow{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}.comparison-score small,.comparison-score span{display:block;color:var(--muted);font-size:.68rem}.comparison-score strong{font-size:1.65rem;line-height:1.1;font-variant-numeric:tabular-nums}.comparison-arm-stats{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:14px}.comparison-arm-stats span{padding:7px;background:var(--canvas);border-radius:8px;font-weight:750;font-variant-numeric:tabular-nums}.comparison-arm-stats small{display:block;color:var(--muted);font-size:.62rem;font-weight:650}.representative-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.comparison-molecule .molecule-rank{max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.representative-note{margin:8px 0 0;color:var(--muted);font-size:.72rem}@media(max-width:900px){.comparison-arm-grid,.representative-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.comparison-arm-grid,.representative-grid{grid-template-columns:1fr}}
+"""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DYRK1A candidate comparison</title>
+<script>{get_plotlyjs()}</script><style>{report_css()}{comparison_css}</style></head>
+<body>{toolbar}<h1>Three model generations versus naïve baseline</h1>
+<p>Four-arm outcome review with generation quality, pipeline survival, docking distributions, evaluated-parent chemistry, and measured compute kept visibly separate. There is deliberately no overall winner score.</p>
+<div class="protocol-banner"><span class="protocol-check">✓</span><div><strong>Fairness gate passed</strong><br>All four arms submitted {checks['equal_submitted_molecule_budget']:,} raw molecules and used one authenticated receptor and identical scientific docking parameters.</div></div>
+<div class="metrics"><div class="metric">Arms compared<strong>4</strong></div><div class="metric">Submitted / arm<strong>{checks['equal_submitted_molecule_budget']:,}</strong></div><div class="metric">Protocol match<strong>Yes</strong></div><div class="metric">Composite score<strong>None</strong></div></div>
+{_arm_cards(summary)}
+<div class="card"><span class="eyebrow">Neutral interpretation</span><p>{html.escape(neutral)}</p></div>
+<div class="card"><strong>Naïve baseline source</strong><p>{html.escape(str(baseline['source_description']))}</p></div>
+<h2>Comparable outcomes</h2><p>Percentages use the raw submitted budget as denominator. Score boxes show every observed score when all four ranking files are available; otherwise the report falls back to p10, median, and mean summaries.</p>
+<div class="card">{summary_table}</div><div class="plotcard">{quality_div}</div>
+<h2>Pipeline survival</h2><p>Absolute molecule counts preserve attrition through intake, the locked pre-dock gate, ligand preparation, and docking.</p><div class="plotcard">{funnel_div}</div>
+<h2>Mean evaluated-parent properties</h2><p>Each panel has its own units and scale. These properties are not collapsed into docking affinity.</p>
+<div class="plotcard">{property_div}</div>
+{representative_cards}
+<div class="foot">Docking is a computational prioritization signal, not proof of biochemical activity. Interpret it beside cohort validity, uniqueness, gate survival, molecular properties, and provenance.</div>
+</body></html>"""
 
 
 def write_candidate_comparison(

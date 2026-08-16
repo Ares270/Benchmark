@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shutil
 import subprocess
 import sys
 import time
@@ -42,12 +43,39 @@ HARNESS_CONFIG_SCHEMA_VERSION = "1"
 SCORING_FUNCTION = "vina"
 
 
+def resolve_smina_executable() -> str:
+    """Return the Smina executable used by this Python environment.
+
+    Normal conda activation puts Smina on PATH. Automation often invokes the
+    environment's Python by absolute path instead, which does not update PATH.
+    In that case Smina is still installed beside the interpreter and should be
+    resolved there. This changes executable discovery only; every scientific
+    docking argument remains sourced from config.py.
+    """
+
+    discovered = shutil.which("smina")
+    if discovered:
+        return str(Path(discovered).resolve())
+
+    interpreter_dir = Path(sys.executable).resolve().parent
+    for filename in ("smina", "smina.exe"):
+        sibling = interpreter_dir / filename
+        if sibling.is_file():
+            return str(sibling)
+
+    raise FileNotFoundError(
+        "Smina executable was not found on PATH or beside the active Python "
+        f"interpreter ({interpreter_dir})"
+    )
+
+
 def smina_version() -> str | None:
     """First line of ``smina --version``; None when smina cannot report one."""
 
     try:
         proc = subprocess.run(
-            ["smina", "--version"], capture_output=True, text=True,
+            [resolve_smina_executable(), "--version"],
+            capture_output=True, text=True,
             timeout=15, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -85,6 +113,10 @@ def harness_config_record(workers: int) -> dict:
     version = smina_version()
     if version is not None:
         record["smina_version"] = version
+    try:
+        record["smina_executable"] = resolve_smina_executable()
+    except OSError:
+        pass
     record["scoring_function"] = SCORING_FUNCTION
     return record
 
@@ -124,7 +156,7 @@ def dock_one(ligand_pdbqt: Path, pose_out: Path) -> tuple[str, float | None, str
 ###  The Rules for the Dock  ###
 
     cmd = [
-        "smina",
+        resolve_smina_executable(),
         "-r", str(config.RECEPTOR_PDBQT),
         "-l", str(ligand_pdbqt),
         *config.smina_box_args(),
