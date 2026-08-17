@@ -79,6 +79,9 @@ DECISION_COLUMNS = (
     "passed",
 )
 
+
+###### Appended to the end of the file by the user for context ######
+
 INTERPRETATION = (
     "This gate declares the range over which Smina scores are treated as "
     "measurements rather than artifacts. It is not a drug-likeness filter. "
@@ -97,7 +100,7 @@ class GateInputError(ValueError):
 
 @dataclass(frozen=True)
 class GateDecision:
-    molecule_id: str
+    molecule_id: str                # the molecule's verdict
     parent_smiles: str
     heavy_atoms: int
     rotatable_bonds: int
@@ -106,7 +109,7 @@ class GateDecision:
     pass_size: bool
     pass_torsions: bool
 
-    @property
+    @property                       # passing has to agree with the boolean fields
     def passed(self) -> bool:
         return self.pass_elements and self.pass_size and self.pass_torsions
 
@@ -124,6 +127,10 @@ class GateDecision:
         }
 
 
+
+
+##### The whole run, frozen and reproducible #####
+
 @dataclass(frozen=True)
 class GateResult:
     decisions: tuple[GateDecision, ...]
@@ -134,7 +141,7 @@ class GateResult:
     max_rotatable_bonds: int
 
     @property
-    def passed_records(self) -> tuple[tuple[str, str], ...]:
+    def passed_records(self) -> tuple[tuple[str, str], ...]:    # filter survivors  and return id, smiles
         return tuple(
             (decision.molecule_id, decision.parent_smiles)
             for decision in self.decisions
@@ -160,7 +167,7 @@ class GateResult:
         }
 
     @property
-    def disallowed_element_histogram(self) -> dict[str, int]:
+    def disallowed_element_histogram(self) -> dict[str, int]:   # count how manytimes each disallowed element appears in the decisions
         histogram: Counter[str] = Counter()
         for decision in self.decisions:
             histogram.update(decision.disallowed_elements)
@@ -177,6 +184,12 @@ def _config_values(config_module: ModuleType) -> tuple[int, frozenset[str], int,
     )
 
 
+
+
+
+
+####### The only function that makes a scientific descision ########
+
 def apply_gate(
     records: Iterable[tuple[str, str]],
     config_module: ModuleType,
@@ -184,11 +197,11 @@ def apply_gate(
     """Evaluate every gate independently for every post-intake parent record."""
 
     (
-        schema_version,
-        allowed_elements,
-        min_heavy_atoms,
-        max_heavy_atoms,
-        max_rotatable_bonds,
+        schema_version,                         # For each (id, smiles) pair:
+        allowed_elements,                               # Reject blank IDs or blank SMILES outright.
+        min_heavy_atoms,                                # Parse the SMILES with RDKit
+        max_heavy_atoms,                                # Count heavy atoms, count rotatable bonds, collect the set of element symbols
+        max_rotatable_bonds,                            # Build the GateDecision with all three gates evaluated
     ) = _config_values(config_module)
     decisions = []
 
@@ -234,6 +247,13 @@ def apply_gate(
     )
 
 
+
+
+
+
+
+##########    Reads the input .smi and splits each line into SMILES + ID.   ##########
+
 def _read_records(input_path: Path) -> list[tuple[str, str]]:
     records = []
     for line_number, line in enumerate(
@@ -274,6 +294,11 @@ def _write_pass(path: Path, result: GateResult) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(text, encoding="utf-8")
     temporary.replace(path)
+
+
+
+
+##### the orchestrator #####
 
 
 def run_gate(input_path: Path, output_dir: Path) -> dict:
