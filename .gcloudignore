@@ -1,0 +1,13 @@
+.gcloudignore
+.git
+.git/**
+*
+!src/
+!src/**
+!cloud/
+!cloud/**
+!data/
+data/*
+!data/target/
+data/target/*
+!data/target/7O7K_protein.pdbqt
