@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "status": "registered_design_locked; checkpoint_and_official_decode_validated_2026-08-10",
+  "runtime": {
+    "python": "3.13.14",
+    "torch": "2.9.1+cpu",
+    "transformers": "5.8.0",
+    "tokenizers": "0.22.2",
+    "rdkit": "2025.9.6",
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "fragment_selfies": "1.0.0",
+    "molexar": "1.0.0"
+  },
+  "arm": {
+    "name": "gen3_molexar_pocket_v1",
+    "generation": 3,
+    "target_aware": true,
+    "conditioning": "protein_pocket_coordinates",
+    "local_training_or_fine_tuning": false
+  },
+  "model": {
+    "repository": "fairydance/molexar-10m-omni",
+    "revision": "39be4ae96102506f6852b7627b27df0ae1ac8186",
+    "license": "MIT",
+    "architecture": "MolexarForCausalLM with a GVP protein-pocket encoder; 16 layers, hidden size 256, vocabulary 127",
+    "expected_parameters": 14756261,
+    "artifacts": {
+      "config.json": {
+        "bytes": 4272,
+        "sha256": "808f2df87bf81b893625e6cdfb7c40775df0857138db22d07589ae28579c19ca"
+      },
+      "pytorch_model.bin": {
+        "bytes": 59320875,
+        "sha256": "89201aa3a9cfa1d9b316acd488fe415ce04d4f4752891bff7f2835096a39adb4"
+      },
+      "tokenizer.json": {
+        "bytes": 14852,
+        "sha256": "d9dfc7a2c647c0bb65724925c3bb2eda1d865461af8aad0902737c4a85fc7dd8"
+      },
+      "tokenizer_config.json": {
+        "bytes": 250,
+        "sha256": "79c00c38ba20d44968dde609af040919d8f244e968163a53590a858f621f64c4"
+      },
+      "training_args.bin": {
+        "bytes": 5777,
+        "sha256": "b60e9c19355731858d918f905d013b29da94db26945ee1d8fef3db5d66b20df0"
+      }
+    },
+    "training_universe": "Released 10M base model followed by universal multi-condition SFT; official training workflow references molecule context plus SAIR and PLINDER pocket-ligand records.",
+    "target_disjoint_training_claimed": false
+  },
+  "official_sources": {
+    "molexar": {
+      "repository": "https://github.com/fairydance/Molexar",
+      "revision": "d874224a577822fe2c19ad99143d58125a369d11"
+    },
+    "fragment_selfies": {
+      "repository": "https://github.com/fairydance/Fragment-SELFIES",
+      "revision": "09f00f8aa5420e2da89fc68bfc6793f4868e9653"
+    },
+    "python_source_set": {
+      "n_files": 34,
+      "total_bytes": 433783,
+      "aggregate_sha256": "688e2f2261bdb5a749f6000c88ad7e381eba58da69a923921128e10182b5fb5d"
+    }
+  },
+  "target": {
+    "name": "human DYRK1A native-ligand site from PDB 7O7K",
+    "source_file": "data/target/7O7K_protein_noH.pdb",
+    "source_bytes": 473607,
+    "source_sha256": "b4e3e62c4928db64b27b3642663dbbc9a74ae44dd3291a5b65e0b6b78cb0bea2",
+    "center_angstrom": [8.631, 17.703, 24.73],
+    "center_source": "the locked native-ligand docking center in src/harness/config.py",
+    "pocket_radius_angstrom": 25.0,
+    "max_atoms": 425,
+    "include_hydrogens": false,
+    "all_nonhydrogen_atoms": 5702,
+    "atoms_within_radius_before_truncation": 1849,
+    "atoms_used": 425,
+    "atom_selection_order": "Molexar PocketProcessor file order after radius selection",
+    "knn_k": 8,
+    "chains_present": ["A", "B"]
+  },
+  "sampling": {
+    "seed": 20260801,
+    "raw_samples": 10000,
+    "docking_subsample": 1000,
+    "batch_size": 100,
+    "do_sample": true,
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 50,
+    "repetition_penalty": 1.0,
+    "max_new_tokens": 204,
+    "conversion_canonical": true,
+    "conversion_randomized": false,
+    "conversion_strict": false,
+    "screening_selection": "uniform raw rows without replacement before intake",
+    "validity_filtering": false,
+    "deduplication": false,
+    "replacement_or_top_up": false
+  },
+  "information_boundary": {
+    "provided_to_generator": [
+      "7O7K protein-pocket atom identities and coordinates within 25 Angstrom of the locked docking center"
+    ],
+    "not_provided_to_generator": [
+      "DYRK1A active ligands",
+      "decoys or measured inactives",
+      "native-ligand identity or coordinates",
+      "protein sequence embeddings",
+      "molecular properties or pharmacophore fingerprints",
+      "pre-docking gate outcomes",
+      "Smina scores or any reward"
+    ]
+  }
+}
