@@ -40,18 +40,34 @@ from src.generation.run_all_arms import (
     DEFAULT_GEN2_MODEL,
     DEFAULT_GEN2_TOKENIZER,
     DEFAULT_GEN3_MODEL,
+    REGISTERED_DOCK_N,
+    REGISTERED_RAW_N,
+    REGISTERED_SEED,
 )
 from src.generation.run_gen3_pipeline import DEFAULT_MOLEXAR_PYTHON
 from src.harness import config, runtime
+from src.harness.build_cohort import DEFAULT_SEED as COHORT_DEFAULT_SEED
 
 
-REGISTERED_SEED = 20260801
-REGISTERED_RAW_N = 10_000
-REGISTERED_DOCK_N = 1_000
 PILOT_RAW_DEFAULT = 100
 PILOT_DOCK_DEFAULT = 10
 DEFAULT_ACTIVES = config.REFERENCE_DIR / "dyrk1a_actives_chembl.csv"
 DEFAULT_GEN3_SOURCES = config.REPO_ROOT / "Models & Miscellaneous/arm3_sources"
+DEFAULT_CONDA_ENV = "dyrk1a-bench"
+# The frozen v1 decoy set was selected with src.harness.select_decoys
+# DEFAULT_PER_ACTIVE = 50, so every accepted active carries 50 assigned decoys.
+# Importing that module here would pull NumPy and RDKit into the console.
+ASSIGNED_DECOYS_PER_ACTIVE = 50
+# Mirrors src/analysis/config.py VALID_MISSING_SCORE_POLICIES.
+MISSING_SCORE_POLICIES = ("error", "exclude", "rank_last")
+MISSING_SCORE_NOTES = {
+    "error": "stop if any molecule failed to dock (default)",
+    "exclude": "drop unscored rows; ranking conditional on successful docking",
+    "rank_last": "place unscored rows at the bottom of the ranking",
+}
+# Mirrors the run-name rule enforced by src/analysis/run_analysis.py
+# _run_directories, which the labelled run reaches only after docking.
+RUN_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 
 
 class BenchmarkConsoleError(ValueError):
@@ -304,11 +320,112 @@ def build_run_command(
     return command
 
 
-def launch(command: list[str], *, dry_run: bool, log_path: Path | None = None) -> int:
-    """Run one existing pipeline with live output and an optional durable log."""
+def _monitor_shell_command(run_dir: Path) -> str:
+    """The exact monitor command a second pane should run for one run."""
 
+    return f"python -m src.benchmark watch {shlex.quote(str(run_dir))}"
+
+
+def _conda_env_name() -> str:
+    """Name the environment this console is running in, for the monitor pane."""
+
+    name = os.environ.get("CONDA_DEFAULT_ENV", "").strip()
+    if name and name != "base":
+        return name
+    return DEFAULT_CONDA_ENV
+
+
+def _windows_directory(path: Path) -> str | None:
+    """Translate a WSL path for Windows Terminal, which cannot read POSIX paths."""
+
+    try:
+        completed = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = completed.stdout.strip()
+    return value if completed.returncode == 0 and value else None
+
+
+def watch_pane_command(run_dir: Path) -> list[str] | None:
+    """Build the Windows Terminal split-pane argv, or None when wt.exe is absent."""
+
+    executable = shutil.which("wt.exe")
+    if executable is None:
+        return None
+    inner = (
+        f"conda activate {shlex.quote(_conda_env_name())} && "
+        f"cd {shlex.quote(str(config.REPO_ROOT))} && "
+        f"{_monitor_shell_command(run_dir)}; exec bash"
+    )
+    argv = [executable, "-w", "0", "split-pane"]
+    start_directory = _windows_directory(config.REPO_ROOT)
+    if start_directory is not None:
+        argv.extend(["-d", start_directory])
+    distro = os.environ.get("WSL_DISTRO_NAME", "").strip()
+    if distro:
+        # --distribution, never -d: Windows Terminal claims -d for itself.
+        argv.extend(
+            ["wsl.exe", "--distribution", distro, "--cd", str(config.REPO_ROOT), "--"]
+        )
+    argv.extend(["bash", "-lic", inner])
+    return argv
+
+
+def watch_pane_block(run_dir: Path, pane_argv: list[str] | None) -> list[str]:
+    """Describe the monitor pane as its own copy-pasteable block."""
+
+    if pane_argv is None:
+        return [
+            "Monitor pane (Windows Terminal unreachable; run this in another pane)",
+            f"  {_monitor_shell_command(run_dir)}",
+        ]
+    return ["Monitor pane", f"  {shlex.join(pane_argv)}"]
+
+
+def open_watch_pane(run_dir: Path, pane_argv: list[str] | None) -> None:
+    """Start the monitor pane and forget it; the benchmark never waits on it."""
+
+    if pane_argv is None:
+        return
+    try:
+        subprocess.Popen(
+            pane_argv,
+            cwd=config.REPO_ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        print(f"Could not open the monitor pane ({error}). Run this instead:")
+        print(f"  {_monitor_shell_command(run_dir)}")
+
+
+def launch_sequence(
+    commands: list[list[str]],
+    *,
+    dry_run: bool,
+    log_path: Path | None = None,
+    watch_dir: Path | None = None,
+) -> int:
+    """Run existing pipelines in order, with live output and an optional log."""
+
+    if not commands:
+        raise BenchmarkConsoleError("Nothing to run")
+    display = " && ".join(shlex.join(command) for command in commands)
     print("Command:")
-    print(f"  {shlex.join(command)}")
+    print(f"  {display}")
+    pane_argv = watch_pane_command(watch_dir) if watch_dir is not None else None
+    if watch_dir is not None:
+        print("")
+        for line in watch_pane_block(watch_dir, pane_argv):
+            print(line)
     if dry_run:
         print("Dry run only; nothing was started.")
         return 0
@@ -326,27 +443,49 @@ def launch(command: list[str], *, dry_run: bool, log_path: Path | None = None) -
         log_handle.write(
             f"Started: {datetime.now(timezone.utc).isoformat()}\n"
             f"Repository: {config.REPO_ROOT}\n"
-            f"Command: {shlex.join(command)}\n\n"
+            f"Command: {display}\n\n"
         )
         print(f"Live log: {destination}\n")
     process: subprocess.Popen[str] | None = None
+    pane_opened = False
+    return_code = 0
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=config.REPO_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            start_new_session=True,
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            if log_handle is not None:
-                log_handle.write(line)
-        return_code = int(process.wait())
+        for index, command in enumerate(commands, 1):
+            if len(commands) > 1:
+                stage = f"\n[stage {index}/{len(commands)}] {shlex.join(command)}\n"
+                if log_handle is not None:
+                    log_handle.write(stage)
+                print(stage, end="", flush=True)
+            process = subprocess.Popen(
+                command,
+                cwd=config.REPO_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                start_new_session=True,
+            )
+            if watch_dir is not None and not pane_opened:
+                pane_opened = True
+                open_watch_pane(watch_dir, pane_argv)
+            assert process.stdout is not None
+            for line in process.stdout:
+                print(line, end="", flush=True)
+                if log_handle is not None:
+                    log_handle.write(line)
+            return_code = int(process.wait())
+            process.stdout.close()
+            if return_code != 0:
+                if index < len(commands):
+                    message = (
+                        f"\nStage {index} exited {return_code}; "
+                        "the remaining stages were not started.\n"
+                    )
+                    if log_handle is not None:
+                        log_handle.write(message)
+                    print(message, end="")
+                break
         footer = (
             f"\nFinished: {datetime.now(timezone.utc).isoformat()}\n"
             f"Exit code: {return_code}\n"
@@ -383,6 +522,20 @@ def launch(command: list[str], *, dry_run: bool, log_path: Path | None = None) -
             process.stdout.close()
         if log_handle is not None:
             log_handle.close()
+
+
+def launch(
+    command: list[str],
+    *,
+    dry_run: bool,
+    log_path: Path | None = None,
+    watch_dir: Path | None = None,
+) -> int:
+    """Run one existing pipeline with live output and an optional durable log."""
+
+    return launch_sequence(
+        [command], dry_run=dry_run, log_path=log_path, watch_dir=watch_dir
+    )
 
 
 def _print_funnel(funnel: dict) -> None:
@@ -487,11 +640,14 @@ def _prompt_choice(
     *,
     input_fn: Callable[[str], str],
     output_fn: Callable[[str], None],
+    annotations: dict[str, str] | None = None,
 ) -> str:
     output_fn(title)
     for index, choice in enumerate(choices, 1):
         suffix = "  (recommended)" if index == 1 else ""
-        output_fn(f"  {index}. {choice}{suffix}")
+        note = (annotations or {}).get(choice, "")
+        detail = f" — {note}" if note else ""
+        output_fn(f"  {index}. {choice}{suffix}{detail}")
     answer = input_fn("Select: ").strip().lower()
     if not answer:
         return choices[0]
@@ -506,13 +662,35 @@ def _prompt_choice(
 
 def _prompt_integer(
     label: str,
-    default: int,
+    default: int | None,
     *,
     input_fn: Callable[[str], str],
+    minimum: int = 1,
 ) -> int:
-    answer = input_fn(f"{label} [{default}]: ").strip()
+    suffix = f" [{default}]" if default is not None else ""
+    answer = input_fn(f"{label}{suffix}: ").strip()
     if not answer:
+        if default is None:
+            raise BenchmarkConsoleError(f"{label} is required")
         return default
+    try:
+        value = int(answer)
+    except ValueError as error:
+        raise BenchmarkConsoleError(f"{label} must be an integer") from error
+    if value < minimum:
+        raise BenchmarkConsoleError(f"{label} must be at least {minimum}")
+    return value
+
+
+def _prompt_optional_integer(
+    label: str,
+    blank_meaning: str,
+    *,
+    input_fn: Callable[[str], str],
+) -> int | None:
+    answer = input_fn(f"{label} [blank = {blank_meaning}]: ").strip()
+    if not answer:
+        return None
     try:
         value = int(answer)
     except ValueError as error:
@@ -522,22 +700,65 @@ def _prompt_integer(
     return value
 
 
+def _prompt_yes_no(question: str, *, input_fn: Callable[[str], str]) -> bool:
+    return input_fn(f"{question} [y/N]: ").strip().lower() in {"y", "yes"}
+
+
+def _four_arm_notice() -> list[str]:
+    """State plainly that the registered campaign has no small version."""
+
+    return [
+        "This is the registered four-arm campaign. It cannot be run as a pilot;",
+        "there is no small version. It runs the property-matched baseline, Gen1,",
+        f"Gen2, and Gen3 at their locked settings (seed {REGISTERED_SEED}, "
+        f"{REGISTERED_RAW_N:,} raw,",
+        f"{REGISTERED_DOCK_N:,} submitted per arm) and will take a long time.",
+    ]
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """One built request: what to run, where it lands, and how to watch it."""
+
+    commands: list[list[str]]
+    outdir: Path
+    start: bool
+    watch: bool = False
+
+
+def _watch_lines(outdir: Path, watch: bool) -> list[str]:
+    """The monitor pane block, kept separate from the runner command block."""
+
+    if not watch:
+        return []
+    return ["", *watch_pane_block(outdir, watch_pane_command(outdir))]
+
+
 def configure_run(
     *,
     no_start: bool = False,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
-) -> tuple[list[str], Path, bool]:
+) -> RunPlan:
     """Interactively construct a safe command without scientific knobs."""
 
     output_fn("DYRK1A benchmark run builder")
     output_fn("Scientific settings are locked here; this builder changes only run logistics.\n")
     kind = _prompt_choice(
         "Run type",
-        ("registered", "pilot"),
+        ("registered", "pilot", "labelled"),
         input_fn=input_fn,
         output_fn=output_fn,
+        annotations={
+            "registered": "locked generative arms at their registered settings",
+            "pilot": "small plumbing check of one generative arm",
+            "labelled": "known actives against their property-matched decoys",
+        },
     )
+    if kind == "labelled":
+        return _configure_labelled_run(
+            no_start=no_start, input_fn=input_fn, output_fn=output_fn
+        )
     pilot = kind == "pilot"
     arms = (
         ("all", "baseline", "gen1", "gen2", "gen3")
@@ -549,6 +770,7 @@ def configure_run(
         arms,
         input_fn=input_fn,
         output_fn=output_fn,
+        annotations={"all": "the registered four-arm campaign; no pilot exists"},
     )
     stamp = datetime.now().strftime("%Y%m%d")
     default_outdir = Path("results") / f"{arm}_{kind}_{stamp}"
@@ -580,6 +802,9 @@ def configure_run(
         dock_n=dock_n,
         workers=workers,
     )
+    watch = _prompt_yes_no(
+        "Open a live monitor pane when this starts?", input_fn=input_fn
+    )
     output_fn("\nReview")
     output_fn(f"  Type:    {kind}")
     output_fn(f"  Arm:     {arm}")
@@ -589,14 +814,132 @@ def configure_run(
         output_fn(f"  Pilot:   raw={raw_n}, downstream={dock_n}")
     output_fn("\nExact command")
     output_fn(f"  {shlex.join(command)}")
+    for line in _watch_lines(outdir, watch):
+        output_fn(line)
     output_fn(
         "\nScientific references: src/harness/config.py, configs/gen2_warmmolgenone.json, "
         "configs/gen3_molexar.json, and README.md."
     )
+    if arm == "all":
+        output_fn("")
+        for line in _four_arm_notice():
+            output_fn(line)
     if no_start:
-        return command, outdir, False
-    start = input_fn("\nStart this run now? [y/N]: ").strip().lower() in {"y", "yes"}
-    return command, outdir, start
+        return RunPlan([command], outdir, False, watch)
+    start = _prompt_yes_no("\nStart this run now?", input_fn=input_fn)
+    return RunPlan([command], outdir, start, watch)
+
+
+def _configure_labelled_run(
+    *,
+    no_start: bool,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> RunPlan:
+    """Build the two-stage labelled run: assemble the cohort, then dock it."""
+
+    output_fn(
+        "\nLabelled run: known DYRK1A actives against the decoys already assigned "
+        "to them."
+    )
+    stamp = datetime.now().strftime("%Y%m%d")
+    default_name = f"labelled_{stamp}"
+    answer = input_fn(f"Run name [{default_name}]: ").strip()
+    name = answer or default_name
+    if not RUN_NAME_PATTERN.fullmatch(name):
+        raise BenchmarkConsoleError(
+            "Run name must be 1-80 characters using only letters, digits, "
+            "'.', '_', or '-'"
+        )
+    outdir = Path("results") / name
+    if outdir.exists():
+        raise BenchmarkConsoleError(
+            f"Output already exists: {outdir}. Choose a new name."
+        )
+    n_actives = _prompt_integer("Number of actives", None, input_fn=input_fn)
+    decoys_per_active = _prompt_optional_integer(
+        "Decoys per active",
+        f"all {ASSIGNED_DECOYS_PER_ACTIVE} assigned",
+        input_fn=input_fn,
+    )
+    seed = _prompt_integer("Seed", COHORT_DEFAULT_SEED, input_fn=input_fn, minimum=0)
+    workers = _prompt_integer("Workers", config.WORKERS, input_fn=input_fn)
+    policy = _prompt_choice(
+        "Missing-score policy",
+        MISSING_SCORE_POLICIES,
+        input_fn=input_fn,
+        output_fn=output_fn,
+        annotations=MISSING_SCORE_NOTES,
+    )
+    python = sys.executable
+    build = [
+        python,
+        "-m",
+        "src.harness.build_cohort",
+        str(outdir),
+        "--n-actives",
+        str(n_actives),
+    ]
+    if decoys_per_active is not None:
+        build.extend(["--decoys-per-active", str(decoys_per_active)])
+    build.extend(["--seed", str(seed)])
+    dock = [
+        python,
+        "-m",
+        "src.harness.run_local",
+        str(outdir),
+        "--name",
+        name,
+        "--workers",
+        str(workers),
+        "--missing-policy",
+        policy,
+    ]
+    commands = [build, dock]
+    watch = _prompt_yes_no(
+        "Open a live monitor pane when this starts?", input_fn=input_fn
+    )
+    per_active = (
+        decoys_per_active
+        if decoys_per_active is not None
+        else ASSIGNED_DECOYS_PER_ACTIVE
+    )
+    total = n_actives + n_actives * per_active
+    decoys_line = (
+        f"{decoys_per_active} per active"
+        if decoys_per_active is not None
+        else f"all assigned decoys ({ASSIGNED_DECOYS_PER_ACTIVE} per active)"
+    )
+    output_fn("\nReview")
+    output_fn("  Type:    labelled (actives versus their assigned decoys)")
+    output_fn(f"  Name:    {name}")
+    output_fn(f"  Output:  {outdir}")
+    output_fn(f"  Actives: {n_actives:,}")
+    output_fn(f"  Decoys:  {decoys_line}")
+    output_fn(f"  Seed:    {seed}")
+    output_fn(f"  Workers: {workers}")
+    output_fn(f"  Missing: {policy} — {MISSING_SCORE_NOTES[policy]}")
+    output_fn(
+        f"  Molecules to be docked: {total:,} "
+        f"({n_actives:,} actives + {n_actives:,} × {per_active} decoys). "
+        "Decoys per active is per active, not a total."
+    )
+    output_fn("\nExact command")
+    output_fn(f"  {' && '.join(shlex.join(stage) for stage in commands)}")
+    output_fn(
+        "  Both stages run in order from Python; docking starts only if the "
+        "cohort was built."
+    )
+    for line in _watch_lines(outdir, watch):
+        output_fn(line)
+    output_fn(
+        "\nScientific references: src/harness/build_cohort.py, src/analysis/config.py, "
+        "and README.md."
+    )
+    if no_start:
+        return RunPlan(commands, outdir, False, watch)
+    start = _prompt_yes_no("\nStart this run now?", input_fn=input_fn)
+    return RunPlan(commands, outdir, start, watch)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -615,7 +958,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     configure = subparsers.add_parser(
         "configure",
-        help="interactively build a safe registered or pilot command",
+        help="interactively build a safe registered, pilot, or labelled command",
     )
     configure.add_argument("--no-start", action="store_true")
     dashboard = subparsers.add_parser(
@@ -632,7 +975,12 @@ def _parser() -> argparse.ArgumentParser:
         "watch",
         help="show a live read-only terminal monitor for one run",
     )
-    watch.add_argument("path", type=Path)
+    watch.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        help="run directory; omit to watch the most recent run under results/",
+    )
     watch.add_argument("--interval", type=float, default=1.0)
     watch.add_argument("--once", action="store_true")
     run.add_argument("arm", choices=("baseline", "gen1", "gen2", "gen3", "all"))
@@ -646,6 +994,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--dock-n", type=int, default=PILOT_DOCK_DEFAULT)
     run.add_argument("--workers", type=int, default=config.WORKERS)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument(
+        "--watch",
+        action="store_true",
+        help="open a live monitor for this run in a second Windows Terminal pane",
+    )
     inspect = subparsers.add_parser(
         "status",
         help="summarize a complete or interrupted result directory",
@@ -668,22 +1021,36 @@ def main() -> None:
             print(f"Benchmark home: {output}")
             return
         if args.command == "watch":
-            from src.monitor import MonitorError, watch_run
+            from src.monitor import MonitorError, latest_run, watch_run
 
+            path = args.path
+            if path is None:
+                try:
+                    path = latest_run()
+                except MonitorError as error:
+                    raise SystemExit(f"error: {error}") from error
+                print(f"Watching the most recent run: {path}")
             try:
                 return_code = watch_run(
-                    args.path, interval=args.interval, once=args.once
+                    path, interval=args.interval, once=args.once
                 )
             except MonitorError as error:
                 raise BenchmarkConsoleError(str(error)) from error
             raise SystemExit(return_code)
         if args.command == "configure":
-            command, outdir, start = configure_run(no_start=args.no_start)
-            if not start:
+            plan = configure_run(no_start=args.no_start)
+            if not plan.start:
                 print("\nNothing was started. Copy the command above when ready.")
                 return
-            log_path = outdir.parent / f"{outdir.name}.console.log"
-            raise SystemExit(launch(command, dry_run=False, log_path=log_path))
+            log_path = plan.outdir.parent / f"{plan.outdir.name}.console.log"
+            raise SystemExit(
+                launch_sequence(
+                    plan.commands,
+                    dry_run=False,
+                    log_path=log_path,
+                    watch_dir=plan.outdir if plan.watch else None,
+                )
+            )
         if args.command == "doctor":
             raise SystemExit(0 if doctor() else 2)
         if args.command == "status":
@@ -698,7 +1065,12 @@ def main() -> None:
             workers=args.workers,
         )
         log_path = args.outdir.parent / f"{args.outdir.name}.console.log"
-        return_code = launch(command, dry_run=args.dry_run, log_path=log_path)
+        return_code = launch(
+            command,
+            dry_run=args.dry_run,
+            log_path=log_path,
+            watch_dir=args.outdir if args.watch else None,
+        )
         if return_code != 0:
             print(f"Inspect status: python -m src.benchmark status {shlex.quote(str(args.outdir))}")
         raise SystemExit(return_code)

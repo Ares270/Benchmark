@@ -11,6 +11,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.harness import config
+
 
 SPINNER = ("|", "/", "-", "\\")
 ARM_DIRS = (
@@ -19,10 +21,91 @@ ARM_DIRS = (
     ("Gen2", "gen2_warmmolgenone"),
     ("Gen3", "gen3_molexar"),
 )
+DEFAULT_RESULTS_DIR = config.REPO_ROOT / "results"
+# One of these marks a run directory that reached a durable summary.
+RUN_MARKERS = (
+    "pipeline_summary.json",
+    "campaign_summary.json",
+    "all_arms_summary.json",
+    "run_local.json",
+    "metrics.json",
+)
+# A run that has only just started has no summary yet, so it is recognized by
+# the first artifacts its runner writes instead.
+IN_PROGRESS_MARKERS = (
+    "cohort.json",
+    "subsample.json",
+    "intake",
+    "gate",
+    "prepared",
+    "docking",
+    "ligands",
+    "samples_*",
+    "screening_*",
+    *(directory for _, directory in ARM_DIRS),
+)
+# run_local writes ligands/<cohort> and docking/<cohort>; runs from before that
+# rename (results/smoke_5x250) used lig_<cohort> and dock_<cohort> instead.
+LEGACY_COHORT_PREFIXES = {"ligands": "lig", "docking": "dock"}
+COHORT_STAGES = (("actives", "actives"), ("decoys", "decoys"))
 
 
 class MonitorError(ValueError):
     """Raised when a run cannot be monitored."""
+
+
+def _is_run_directory(path: Path) -> bool:
+    """True for a finished run, a live run, or a hidden .partial working copy."""
+
+    if not path.is_dir():
+        return False
+    if path.name.startswith(".") and path.name.endswith(".partial"):
+        return True
+    if any((path / marker).is_file() for marker in RUN_MARKERS):
+        return True
+    if (path.parent / f"{path.name}.console.log").is_file():
+        return True
+    for marker in IN_PROGRESS_MARKERS:
+        if "*" in marker:
+            if any(path.glob(marker)):
+                return True
+        elif (path / marker).exists():
+            return True
+    return False
+
+
+def _run_mtime(path: Path) -> float:
+    """Latest activity: the directory itself, its entries, or its console log."""
+
+    times = [path.stat().st_mtime]
+    log = path.parent / f"{path.name}.console.log"
+    if log.is_file():
+        times.append(log.stat().st_mtime)
+    try:
+        times.extend(entry.stat().st_mtime for entry in path.iterdir())
+    except OSError:
+        pass
+    return max(times)
+
+
+def latest_run(results_dir: Path | None = None) -> Path:
+    """Return the most recently active run directory, finished or in progress."""
+
+    root = Path(results_dir) if results_dir is not None else DEFAULT_RESULTS_DIR
+    if not root.is_dir():
+        raise MonitorError(f"No results directory to search: {root}")
+    candidates: list[tuple[float, Path]] = []
+    for entry in sorted(root.iterdir()):
+        try:
+            if _is_run_directory(entry):
+                candidates.append((_run_mtime(entry), entry))
+        except OSError:
+            continue
+    if not candidates:
+        raise MonitorError(
+            f"No run directories found under {root}; name one explicitly"
+        )
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def _json(path: Path) -> dict | None:
@@ -55,12 +138,60 @@ def _screening_root(root: Path) -> Path | None:
     return candidates[-1] if candidates else None
 
 
+def _is_cohort_run(root: Path) -> bool:
+    """True for a labelled run directory built by build_cohort + run_local."""
+
+    if (root / "cohort.json").is_file():
+        return True
+    return (root / "actives.smi").is_file() and (root / "decoys.smi").is_file()
+
+
+def _cohort_directory(root: Path, stage: str, cohort: str) -> Path | None:
+    """Locate ligands/<cohort> or docking/<cohort>, tolerating the legacy names."""
+
+    current = root / stage / cohort
+    if current.is_dir():
+        return current
+    legacy = root / f"{LEGACY_COHORT_PREFIXES[stage]}_{cohort}"
+    return legacy if legacy.is_dir() else None
+
+
 def _sample_root(root: Path) -> Path | None:
     candidates = sorted(
         (path for path in root.glob("samples_*") if path.is_dir()),
         key=lambda path: path.stat().st_mtime,
     )
     return candidates[-1] if candidates else None
+
+
+def _live_count(directory: Path | None, pattern: str) -> int:
+    """Count artifacts already on disk, for a stage with no summary yet."""
+
+    if directory is None or not directory.is_dir():
+        return 0
+    try:
+        return sum(1 for _ in directory.glob(pattern))
+    except OSError:
+        return 0
+
+
+def _prepared_count(directory: Path | None, summary: dict | None) -> int:
+    """Prepared ligands, from the durable summary or the PDBQT files themselves."""
+
+    return _count(
+        summary,
+        "counts",
+        "successful_pdbqt_available",
+        default=_live_count(directory, "*.pdbqt"),
+    )
+
+
+def _scored_count(directory: Path | None, summary: dict | None) -> int:
+    """Docked ligands, from the durable summary or the poses themselves."""
+
+    if summary is None:
+        return _live_count(directory, "*_out.pdbqt")
+    return _count(summary, "counts", "ok") + _count(summary, "counts", "cached")
 
 
 def _count(record: dict | None, *keys: str, default: int = 0) -> int:
@@ -131,22 +262,14 @@ def _single_snapshot(root: Path, label: str | None = None) -> dict:
     accepted = _count(intake, "counts", "accepted_for_preparation")
     gate = _json(screening / "gate/gate_summary.json") if screening else None
     passed = _count(gate, "n_passed")
-    preparation = _json(screening / "prepared/_prep_summary.json") if screening else None
-    prepared_live = (
-        len(list((screening / "prepared").glob("*.pdbqt")))
-        if screening and (screening / "prepared").is_dir()
-        else 0
-    )
-    prepared = _count(preparation, "counts", "successful_pdbqt_available", default=prepared_live)
-    docking = _json(screening / "docking/_dock_summary.json") if screening else None
-    docked_live = (
-        len(list((screening / "docking").glob("*_out.pdbqt")))
-        if screening and (screening / "docking").is_dir()
-        else 0
-    )
-    scored = _count(docking, "counts", "ok") + _count(docking, "counts", "cached")
-    if docking is None:
-        scored = docked_live
+    prepared_dir = screening / "prepared" if screening else None
+    preparation = _json(prepared_dir / "_prep_summary.json") if prepared_dir else None
+    prepared_live = _live_count(prepared_dir, "*.pdbqt")
+    prepared = _prepared_count(prepared_dir, preparation)
+    docking_dir = screening / "docking" if screening else None
+    docking = _json(docking_dir / "_dock_summary.json") if docking_dir else None
+    docked_live = _live_count(docking_dir, "*_out.pdbqt")
+    scored = _scored_count(docking_dir, docking)
 
     stages = [
         _stage(
@@ -174,6 +297,95 @@ def _single_snapshot(root: Path, label: str | None = None) -> dict:
         "completed_stages": completed_stages,
         "active_stage": active,
         "funnel": funnel,
+    }
+
+
+def _cohort_snapshot(root: Path, label: str | None = None) -> dict:
+    """Snapshot a labelled run in run_local's order: cohort, actives, decoys."""
+
+    root = Path(root)
+    cohort = _json(root / "cohort.json")
+    completion = _json(root / "run_local.json")
+    run_complete = completion is not None
+
+    # cohort.json records the selection; the .smi files are the fallback while
+    # it is still being written, and the only source for a legacy layout.
+    totals = {
+        name: (
+            _count(cohort, "selection", f"n_{name}")
+            or _line_count(root / f"{name}.smi")
+        )
+        for name, _ in COHORT_STAGES
+    }
+    selected = totals["actives"] + totals["decoys"]
+    # A legacy run has no cohort.json, but its .smi files are the built cohort.
+    cohort_built = cohort is not None or (
+        selected > 0
+        and (root / "actives.smi").is_file()
+        and (root / "decoys.smi").is_file()
+    )
+    stages = [
+        _stage(
+            "Cohort",
+            cohort_built,
+            selected if cohort_built else 0,
+            selected,
+            (
+                f"{totals['actives']:,} actives + {totals['decoys']:,} decoys"
+                if selected
+                else ""
+            ),
+        )
+    ]
+    for name, title in COHORT_STAGES:
+        ligand_dir = _cohort_directory(root, "ligands", name)
+        pose_dir = _cohort_directory(root, "docking", name)
+        preparation = _json(ligand_dir / "_prep_summary.json") if ligand_dir else None
+        docking = _json(pose_dir / "_dock_summary.json") if pose_dir else None
+        prepared_live = _live_count(ligand_dir, "*.pdbqt")
+        prepared = _prepared_count(ligand_dir, preparation)
+        docked_live = _live_count(pose_dir, "*_out.pdbqt")
+        scored = _scored_count(pose_dir, docking)
+        stages.append(
+            _stage(
+                f"Prep {title}",
+                preparation is not None,
+                prepared,
+                totals[name],
+                f"{prepared:,} PDBQT" if prepared_live or preparation else "",
+            )
+        )
+        stages.append(
+            _stage(
+                f"Dock {title}",
+                docking is not None,
+                scored,
+                prepared,
+                f"{scored:,} scored" if docked_live or docking else "",
+            )
+        )
+    stages.append(
+        _stage(
+            "Analyze",
+            run_complete,
+            1 if run_complete else 0,
+            1,
+            "reports written" if run_complete else "",
+        )
+    )
+    _apply_states(stages, run_complete)
+    completed_stages = sum(stage["state"] == "complete" for stage in stages)
+    active = next(
+        (stage["label"] for stage in stages if stage["state"] == "current"), "Complete"
+    )
+    return {
+        "label": label or root.name,
+        "root": root.resolve(),
+        "complete": run_complete,
+        "stages": stages,
+        "completed_stages": completed_stages,
+        "active_stage": active,
+        "funnel": (completion or {}).get("funnel", {}),
     }
 
 
@@ -223,6 +435,10 @@ def snapshot_run(path: Path) -> dict:
                 arms.append(pending)
         complete = all_summary is not None
         mode = "all"
+    elif _is_cohort_run(path):
+        arms = [_cohort_snapshot(path)]
+        complete = arms[0]["complete"]
+        mode = "cohort"
     else:
         arms = [_single_snapshot(path)]
         complete = arms[0]["complete"]
@@ -301,7 +517,8 @@ def render_snapshot(snapshot: dict, frame: int = 0) -> str:
         lines.extend(("", f"ACTIVE DETAIL — {active_arm['label']}"))
     else:
         active_arm = snapshot["arms"][0]
-        lines.append(f"PIPELINE — {active_arm['label']}")
+        heading = "LABELLED RUN" if snapshot["mode"] == "cohort" else "PIPELINE"
+        lines.append(f"{heading} — {active_arm['label']}")
     for stage in active_arm["stages"]:
         glyph = "✓" if stage["state"] == "complete" else (spinner if stage["state"] == "current" else "·")
         if stage["state"] == "current" and stage["total"] <= 0:
@@ -344,12 +561,24 @@ def watch_run(path: Path, *, interval: float = 1.0, once: bool = False) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Watch an immutable benchmark run")
-    parser.add_argument("path", type=Path)
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        help="run directory; omit to watch the most recent run under results/",
+    )
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    path = args.path
+    if path is None:
+        try:
+            path = latest_run()
+        except MonitorError as error:
+            raise SystemExit(f"error: {error}") from error
+        print(f"Watching the most recent run: {path}")
     try:
-        raise SystemExit(watch_run(args.path, interval=args.interval, once=args.once))
+        raise SystemExit(watch_run(path, interval=args.interval, once=args.once))
     except MonitorError as error:
         parser.error(str(error))
 

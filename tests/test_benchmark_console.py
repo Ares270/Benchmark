@@ -14,7 +14,10 @@ from src.benchmark import (
     build_run_command,
     configure_run,
     launch,
+    launch_sequence,
     status,
+    watch_pane_block,
+    watch_pane_command,
 )
 
 
@@ -96,31 +99,174 @@ class BenchmarkConfigureTests(unittest.TestCase):
 
     def test_registered_builder_defaults_to_all_and_hides_scientific_knobs(self):
         with tempfile.TemporaryDirectory() as temporary:
-            command, outdir, start = configure_run(
+            printed: list[str] = []
+            plan = configure_run(
                 no_start=True,
-                input_fn=self._answers(["", "", str(Path(temporary) / "registered"), ""]),
-                output_fn=lambda _line: None,
+                input_fn=self._answers(
+                    ["", "", str(Path(temporary) / "registered"), "", ""]
+                ),
+                output_fn=printed.append,
             )
-            self.assertFalse(start)
-            self.assertEqual(outdir, Path(temporary) / "registered")
+            self.assertFalse(plan.start)
+            self.assertFalse(plan.watch)
+            self.assertEqual(plan.outdir, Path(temporary) / "registered")
+            self.assertEqual(len(plan.commands), 1)
+            command = plan.commands[0]
             self.assertIn("src.generation.run_all_arms", command)
             self.assertNotIn("--seed", command)
             self.assertNotIn("--raw-n", command)
 
-    def test_pilot_builder_maps_counts_to_existing_validation_flags(self):
+    def test_four_arm_builder_states_that_no_pilot_version_exists(self):
         with tempfile.TemporaryDirectory() as temporary:
-            command, _, start = configure_run(
+            printed: list[str] = []
+            configure_run(
                 no_start=True,
                 input_fn=self._answers(
-                    ["2", "1", str(Path(temporary) / "pilot"), "3", "25", "5"]
+                    ["", "", str(Path(temporary) / "registered"), "", ""]
+                ),
+                output_fn=printed.append,
+            )
+            notice = "\n".join(printed)
+            self.assertIn("cannot be run as a pilot", notice)
+            self.assertIn("20260801", notice)
+            self.assertIn("10,000", notice)
+            self.assertIn("1,000", notice)
+
+    def test_pilot_builder_maps_counts_to_existing_validation_flags(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = configure_run(
+                no_start=True,
+                input_fn=self._answers(
+                    ["2", "1", str(Path(temporary) / "pilot"), "3", "25", "5", ""]
                 ),
                 output_fn=lambda _line: None,
             )
-            self.assertFalse(start)
+            self.assertFalse(plan.start)
+            command = plan.commands[0]
             self.assertIn("src.generation.run_gen3_pipeline", command)
             self.assertEqual(command[command.index("--raw-n") + 1], "25")
             self.assertEqual(command[command.index("--dock-n") + 1], "5")
             self.assertEqual(command[command.index("--workers") + 1], "3")
+
+    def test_labelled_builder_chains_cohort_and_run_from_one_name(self):
+        printed: list[str] = []
+        plan = configure_run(
+            no_start=True,
+            input_fn=self._answers(
+                ["3", "labelled_console_unittest", "5", "", "", "", "", ""]
+            ),
+            output_fn=printed.append,
+        )
+        self.assertFalse(plan.start)
+        self.assertEqual(plan.outdir, Path("results/labelled_console_unittest"))
+        build, dock = plan.commands
+        self.assertIn("src.harness.build_cohort", build)
+        self.assertEqual(build[build.index("--n-actives") + 1], "5")
+        self.assertEqual(build[build.index("--seed") + 1], "42")
+        self.assertNotIn("--decoys-per-active", build)
+        self.assertIn("src.harness.run_local", dock)
+        self.assertEqual(dock[dock.index("--name") + 1], "labelled_console_unittest")
+        self.assertEqual(dock[dock.index("--missing-policy") + 1], "error")
+        self.assertIn("results/labelled_console_unittest", build)
+        self.assertIn("results/labelled_console_unittest", dock)
+        review = "\n".join(printed)
+        # 5 actives + 5 x 50 assigned decoys; per-active is not a total.
+        self.assertIn("Molecules to be docked: 255", review)
+        self.assertIn("all assigned decoys (50 per active)", review)
+
+    def test_labelled_builder_counts_requested_decoys_per_active(self):
+        printed: list[str] = []
+        plan = configure_run(
+            no_start=True,
+            input_fn=self._answers(
+                ["3", "labelled_console_unittest2", "10", "3", "7", "2", "2", ""]
+            ),
+            output_fn=printed.append,
+        )
+        build, dock = plan.commands
+        self.assertEqual(build[build.index("--decoys-per-active") + 1], "3")
+        self.assertEqual(build[build.index("--seed") + 1], "7")
+        self.assertEqual(dock[dock.index("--workers") + 1], "2")
+        self.assertEqual(dock[dock.index("--missing-policy") + 1], "exclude")
+        self.assertIn("Molecules to be docked: 40", "\n".join(printed))
+
+    def test_labelled_builder_refuses_a_name_the_analysis_would_reject(self):
+        with self.assertRaisesRegex(BenchmarkConsoleError, "Run name"):
+            configure_run(
+                no_start=True,
+                input_fn=self._answers(["3", "not a valid name!"]),
+                output_fn=lambda _line: None,
+            )
+
+    def test_builder_offers_the_monitor_pane_as_its_own_block(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            printed: list[str] = []
+            plan = configure_run(
+                no_start=True,
+                input_fn=self._answers(
+                    ["", "2", str(Path(temporary) / "watched"), "", "y"]
+                ),
+                output_fn=printed.append,
+            )
+            self.assertTrue(plan.watch)
+            self.assertIn("Monitor pane", "\n".join(printed))
+            self.assertNotIn("&&", "\n".join(printed).split("Monitor pane")[0])
+
+
+class BenchmarkWatchPaneTests(unittest.TestCase):
+    def test_absent_windows_terminal_falls_back_to_a_pasteable_command(self):
+        with mock.patch("src.benchmark.shutil.which", return_value=None):
+            argv = watch_pane_command(Path("results/run"))
+        self.assertIsNone(argv)
+        block = watch_pane_block(Path("results/run"), argv)
+        self.assertIn("python -m src.benchmark watch results/run", block[1])
+
+    def test_pane_command_quotes_paths_and_keeps_the_shell_alive(self):
+        with mock.patch("src.benchmark.shutil.which", return_value="/mnt/c/wt.exe"):
+            argv = watch_pane_command(Path("results/a run"))
+        self.assertIsNotNone(argv)
+        self.assertEqual(argv[:4], ["/mnt/c/wt.exe", "-w", "0", "split-pane"])
+        inner = argv[-1]
+        self.assertIn("'results/a run'", inner)
+        self.assertTrue(inner.endswith("; exec bash"))
+
+
+class BenchmarkSequenceTests(unittest.TestCase):
+    def test_failed_first_stage_stops_the_chain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "chain.console.log"
+            marker = Path(temporary) / "second-stage-ran"
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                code = launch_sequence(
+                    [
+                        [sys.executable, "-c", "raise SystemExit(3)"],
+                        [
+                            sys.executable,
+                            "-c",
+                            f"open({str(marker)!r}, 'w').close()",
+                        ],
+                    ],
+                    dry_run=False,
+                    log_path=log,
+                )
+            self.assertEqual(code, 3)
+            self.assertFalse(marker.exists())
+            self.assertIn("the remaining stages were not started", captured.getvalue())
+
+    def test_dry_run_prints_the_pane_without_opening_it(self):
+        captured = io.StringIO()
+        with mock.patch("src.benchmark.open_watch_pane") as opener:
+            with redirect_stdout(captured):
+                code = launch_sequence(
+                    [[sys.executable, "-c", "print('no')"]],
+                    dry_run=True,
+                    watch_dir=Path("results/run"),
+                )
+        self.assertEqual(code, 0)
+        opener.assert_not_called()
+        self.assertIn("Monitor pane", captured.getvalue())
+        self.assertIn("Dry run only", captured.getvalue())
 
 
 class BenchmarkStatusTests(unittest.TestCase):
