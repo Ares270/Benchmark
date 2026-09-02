@@ -246,6 +246,7 @@ docs/
 !docs/
 docs/*
 !docs/PREDOCK_GATE_AND_NAIVE_BASELINE_SPEC.md
+!docs/HARNESS_VALIDATION_THRESHOLD.md
 # Local working status doc (superseded by docs/)
 PROJECT_STATUS_2026-07-20.md
 
