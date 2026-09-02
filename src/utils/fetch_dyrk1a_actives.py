@@ -18,7 +18,8 @@ NOTE ON REPRODUCIBILITY
   data/reference_sets/, a directory no consumer in this repo ever read, so
   the committed script could not have produced the committed CSV as-is.
   Fixing the path makes this script correct going forward. It does NOT make
-  it the script that produced the frozen file.
+  it the script that produced the frozen file. The only reproduction claim
+  the project makes is the consistency check in provenance/verify_actives.sh.
 
   The frozen CSV is an input to the decoy cohort and the matching scales.
   This script refuses to overwrite an existing output unless --force is
@@ -112,6 +113,8 @@ def main():
             f"REFUSING TO WRITE: {OUTPUT_FILE} already exists.\n"
             f"This file is a frozen input; the decoy cohort and the matching "
             f"scales are derived from it.\n"
+            f"To verify it against a live query without touching it, run "
+            f"provenance/verify_actives.sh.\n"
             f"Pass --force only if you intend to replace it."
         )
 
