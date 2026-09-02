@@ -1,8 +1,6 @@
-
 """
-
-
 Pull DYRK1A active compounds from ChEMBL.
+
 Filters: IC50 ≤ 1000 nM, enzymatic assays, human target, exact measurements.
 Deduplicates by compound (median IC50).
 
@@ -12,12 +10,23 @@ Criteria
   - Deduplication: median IC50 across measurements
   - Standard relation: '=' or '<' only (no ambiguous '>' overblown IC50 entries)
 
-Output: data/reference_sets/dyrk1a_actives_chembl.csv
+Output: data/reference/dyrk1a_actives_chembl.csv
 
+NOTE ON REPRODUCIBILITY
+  This script writes to data/reference/. Earlier revisions wrote to
+  data/reference_sets/, a directory no consumer in this repo ever read, so
+  the committed script could not have produced the committed CSV as-is.
+  Fixing the path makes this script correct going forward. It does NOT make
+  it the script that produced the frozen file.
 
+  The frozen CSV is an input to the decoy cohort and the matching scales.
+  This script refuses to overwrite an existing output unless --force is
+  passed. Do not pass --force against data/reference/.
 """
 
+import argparse
 import os
+
 import pandas as pd
 from chembl_webresource_client.new_client import new_client
 
@@ -25,11 +34,30 @@ from chembl_webresource_client.new_client import new_client
 TARGET_CHEMBL_ID = "CHEMBL2292"          # DYRK1A, Homo sapiens
 IC50_CUTOFF_NM   = 1000                  # ≤ 1 µM
 ASSAY_TYPE       = "B"                   # Biochemical (enzymatic)
-OUTPUT_DIR       = "data/reference_sets"
+RELATION_WHITELIST = ["=", "'='", "<"]   # literal set, matched verbatim
+OUTPUT_DIR       = "data/reference"
 OUTPUT_FILE      = os.path.join(OUTPUT_DIR, "dyrk1a_actives_chembl.csv")
 # ────────────────────────────────────────────────────────────────────────
 
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the output file if it already exists. The reference "
+             "actives set is a frozen input; do not use this against "
+             "data/reference/.",
+    )
+    args = parser.parse_args()
+
+    if os.path.exists(OUTPUT_FILE) and not args.force:
+        raise SystemExit(
+            f"REFUSING TO WRITE: {OUTPUT_FILE} already exists.\n"
+            f"This file is a frozen input; the decoy cohort and the matching "
+            f"scales are derived from it.\n"
+            f"Pass --force only if you intend to replace it."
+        )
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # FETCH ALL ACTIVES FOR TARGET
@@ -48,7 +76,7 @@ def main():
         "standard_type",
         "standard_units",
         "assay_type",
-        "pchembl_value",           
+        "pchembl_value",
     ])
 
     # Convert to DataFrame
@@ -61,7 +89,7 @@ def main():
 
     # FILTER
     # FILTER 1 - Keep only exact measurements (= or <), not ambiguous '>' or '>>'
-    df = df[df["standard_relation"].isin(["=", "'='", "<"])].copy()
+    df = df[df["standard_relation"].isin(RELATION_WHITELIST)].copy()
     print(f"  After relation filter (= or <): {len(df)}")
 
     # Convert to numeric and apply cutoff
@@ -95,6 +123,7 @@ def main():
     print(f"  IC50 range:    {grouped['median_ic50_nM'].min():.1f} – {grouped['median_ic50_nM'].max():.1f} nM")
     print(f"  Median IC50:   {grouped['median_ic50_nM'].median():.1f} nM")
     print(f"  Compounds with ≥3 measurements: {(grouped['n_measurements'] >= 3).sum()}")
+
 
 if __name__ == "__main__":
     main()
