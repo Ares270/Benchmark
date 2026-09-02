@@ -43,6 +43,7 @@ ASSAY_TYPE       = "B"                   # Biochemical (enzymatic)
 RELATION_WHITELIST = ["=", "'='", "<"]   # literal set, matched verbatim
 OUTPUT_DIR       = "data/reference"
 OUTPUT_FILE      = os.path.join(OUTPUT_DIR, "dyrk1a_actives_chembl.csv")
+MANUAL_ADDITIONS = os.path.join(OUTPUT_DIR, "manual_additions.csv")
 PROVENANCE_FILE  = OUTPUT_FILE + ".provenance.json"
 # ────────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,21 @@ def fetch_chembl_status():
     response.raise_for_status()
     payload = response.json()
     return url, payload
+
+
+def load_manual_additions(path):
+    """Return manual-addition rows as a DataFrame, or None if absent."""
+    if not os.path.exists(path):
+        return None
+    manual = pd.read_csv(path, dtype={"molecule_chembl_id": str})
+    required = {"molecule_chembl_id", "canonical_smiles",
+                "median_ic50_nM", "n_measurements"}
+    missing = required - set(manual.columns)
+    if missing:
+        raise SystemExit(
+            f"{path} is missing required columns: {sorted(missing)}"
+        )
+    return manual
 
 
 def main():
@@ -178,6 +194,25 @@ def main():
     counts["unique_compounds_from_chembl"] = len(grouped)
     print(f"  Unique compounds after dedup: {len(grouped)}")
 
+    # MANUAL ADDITIONS - compounds not reachable by the query above.
+    # Appended after the ChEMBL filters and before the final sort, so they
+    # are never silently mistaken for query output.
+    manual = load_manual_additions(MANUAL_ADDITIONS)
+    manual_ids = []
+    if manual is None:
+        print(f"  No manual additions file at {MANUAL_ADDITIONS}; skipping.")
+        counts["manual_additions_appended"] = 0
+    else:
+        for _, row in manual.iterrows():
+            manual_ids.append(str(row["molecule_chembl_id"]))
+            print(f"  Appending manual addition: {row['molecule_chembl_id']}")
+        grouped = pd.concat(
+            [grouped, manual[["molecule_chembl_id", "canonical_smiles",
+                              "median_ic50_nM", "n_measurements"]]],
+            ignore_index=True,
+        )
+        counts["manual_additions_appended"] = len(manual)
+
     counts["final_rows"] = len(grouped)
 
     # SAVE
@@ -206,6 +241,8 @@ def main():
         "client_package_version": client_version(),
         "query_constraints": query_constraints,
         "row_counts": counts,
+        "manual_additions_file": MANUAL_ADDITIONS if manual is not None else None,
+        "manual_addition_ids": manual_ids,
         "output_file": OUTPUT_FILE,
         "output_sha256": sha256_of(OUTPUT_FILE),
     }

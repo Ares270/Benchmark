@@ -1,0 +1,2 @@
+molecule_chembl_id,canonical_smiles,median_ic50_nM,n_measurements,source_doi,source_note
+MANUAL_L41,O=C1N=C(Nc2ccccc2)N/C1=C\c1ccc2c(c1)OCO2,40.0,1,,leucettine L41; added by hand to the reference actives set. Not returned by the ChEMBL activity query in src/utils/fetch_dyrk1a_actives.py. source_doi intentionally left empty - fill in from the primary literature; do not guess.
