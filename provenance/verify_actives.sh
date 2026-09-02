@@ -133,6 +133,8 @@ for p in (committed_path, f"{committed_path.rsplit('/', 1)[0]}/dyrk1a_actives.sm
         pass
 
 committed = pd.read_csv(committed_path, dtype={"molecule_chembl_id": str})
+committed_text = pd.read_csv(committed_path, dtype=str).set_index(
+    "molecule_chembl_id")
 manual = pd.read_csv(manual_path, dtype={"molecule_chembl_id": str})
 manual_ids = set(manual["molecule_chembl_id"])
 expected_ids = set(committed["molecule_chembl_id"]) - manual_ids
@@ -286,10 +288,24 @@ print()
 # --- REPORTED, NOT ASSERTED ----------------------------------------------
 new_today = sorted(today_ids - set(committed["molecule_chembl_id"]))
 
+def stored_decimals(text):
+    """Decimal places the CSV actually stores for a value."""
+    text = str(text).strip()
+    return len(text.split(".", 1)[1]) if "." in text else 0
+
+
+# Compare at the precision the committed file stores, not at full float
+# precision. The committed median is text round-tripped through CSV at one
+# decimal place; today's is recomputed in full precision, so exact float
+# equality reports differences of ~1e-14 that are representation noise, not
+# curation changes. Rounding today's value to the stored precision reports
+# only differences the committed file could actually have recorded.
 ic50_deltas = []
 for mid in shared:
-    c_val = float(committed_by_id.loc[mid, "median_ic50_nM"])
-    t_val = float(today_by_id.loc[mid, "median_ic50_nM"])
+    c_text = committed_text.loc[mid, "median_ic50_nM"]
+    places = stored_decimals(c_text)
+    c_val = float(c_text)
+    t_val = round(float(today_by_id.loc[mid, "median_ic50_nM"]), places)
     if c_val != t_val:
         ic50_deltas.append((mid, c_val, t_val, t_val - c_val))
 
@@ -300,8 +316,10 @@ print(f"  {'ChEMBL version today':<44} {chembl_version_today}")
 print(f"  {'ChEMBL release date today':<44} {chembl_release_today}")
 print(f"  {'Compounds in today result absent from committed':<44} "
       f"{len(new_today)}")
-print(f"  {'Committed compounds with changed median IC50':<44} "
+print(f"  {'Committed compounds with changed median IC50*':<44} "
       f"{len(ic50_deltas)}")
+print("  * compared at the precision the committed CSV stores; see"
+      " stored_decimals()")
 print()
 
 if ic50_deltas:
