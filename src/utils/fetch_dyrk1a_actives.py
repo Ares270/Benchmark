@@ -11,6 +11,7 @@ Criteria
   - Standard relation: '=' or '<' only (no ambiguous '>' overblown IC50 entries)
 
 Output: data/reference/dyrk1a_actives_chembl.csv
+Sidecar: data/reference/dyrk1a_actives_chembl.csv.provenance.json
 
 NOTE ON REPRODUCIBILITY
   This script writes to data/reference/. Earlier revisions wrote to
@@ -25,10 +26,15 @@ NOTE ON REPRODUCIBILITY
 """
 
 import argparse
+import hashlib
+import json
 import os
+from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 from chembl_webresource_client.new_client import new_client
+from chembl_webresource_client.settings import Settings
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
 TARGET_CHEMBL_ID = "CHEMBL2292"          # DYRK1A, Homo sapiens
@@ -37,7 +43,42 @@ ASSAY_TYPE       = "B"                   # Biochemical (enzymatic)
 RELATION_WHITELIST = ["=", "'='", "<"]   # literal set, matched verbatim
 OUTPUT_DIR       = "data/reference"
 OUTPUT_FILE      = os.path.join(OUTPUT_DIR, "dyrk1a_actives_chembl.csv")
+PROVENANCE_FILE  = OUTPUT_FILE + ".provenance.json"
 # ────────────────────────────────────────────────────────────────────────
+
+
+def sha256_of(path):
+    """Return the hex sha256 of a file, read in chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def client_version():
+    """Return the installed chembl_webresource_client version."""
+    import importlib.metadata as md
+    try:
+        return md.version("chembl_webresource_client")
+    except Exception:
+        return None
+
+
+def fetch_chembl_status():
+    """Read the ChEMBL status endpoint and return its payload verbatim.
+
+    Field names here were verified against the live endpoint rather than
+    assumed: status.json reports chembl_db_version and chembl_release_date
+    and nothing resembling an API version. The payload is stored whole so a
+    later reader can see exactly what the service said, typos included
+    (ChEMBL itself spells one key 'disinct_compounds').
+    """
+    url = Settings.Instance().NEW_CLIENT_URL + "/status.json"
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    payload = response.json()
+    return url, payload
 
 
 def main():
@@ -60,6 +101,25 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    # PROVENANCE - capture the service state before querying it
+    fetch_started_utc = datetime.now(timezone.utc).isoformat()
+    status_url, status = fetch_chembl_status()
+    print("ChEMBL status endpoint:", status_url)
+    print(f"  chembl_db_version:   {status.get('chembl_db_version')}")
+    print(f"  chembl_release_date: {status.get('chembl_release_date')}")
+    print(f"  service status:      {status.get('status')}")
+
+    query_constraints = {
+        "target_chembl_id": TARGET_CHEMBL_ID,
+        "standard_type": "IC50",
+        "standard_units": "nM",
+        "assay_type": ASSAY_TYPE,
+        "standard_relation_in": RELATION_WHITELIST,
+        "standard_value_max_nM": IC50_CUTOFF_NM,
+        "require_non_empty_smiles": True,
+        "dedup": "median IC50 per molecule_chembl_id",
+    }
+
     # FETCH ALL ACTIVES FOR TARGET
     print(f"Querying ChEMBL for target {TARGET_CHEMBL_ID}...")
     activity = new_client.activity
@@ -81,6 +141,7 @@ def main():
 
     # Convert to DataFrame
     df = pd.DataFrame(list(results))
+    counts = {"raw_records": len(df)}
     print(f"  Raw records from ChEMBL: {len(df)}")
 
     if df.empty:
@@ -90,17 +151,21 @@ def main():
     # FILTER
     # FILTER 1 - Keep only exact measurements (= or <), not ambiguous '>' or '>>'
     df = df[df["standard_relation"].isin(RELATION_WHITELIST)].copy()
+    counts["after_relation_filter"] = len(df)
     print(f"  After relation filter (= or <): {len(df)}")
 
     # Convert to numeric and apply cutoff
     df["standard_value"] = pd.to_numeric(df["standard_value"], errors="coerce")
     df = df.dropna(subset=["standard_value"])
+    counts["after_numeric_value"] = len(df)
     df = df[df["standard_value"] <= IC50_CUTOFF_NM]
+    counts["after_ic50_cutoff"] = len(df)
     print(f"  After IC50 ≤ {IC50_CUTOFF_NM} nM: {len(df)}")
 
     # Drop entries with no SMILES
     df = df.dropna(subset=["canonical_smiles"])
     df = df[df["canonical_smiles"].str.strip() != ""]
+    counts["after_smiles_filter"] = len(df)
     print(f"  After dropping missing SMILES: {len(df)}")
 
     # Handling duplicatess (median IC50)
@@ -110,12 +175,44 @@ def main():
         n_measurements=("standard_value", "count"),
     ).reset_index()
 
+    counts["unique_compounds_from_chembl"] = len(grouped)
     print(f"  Unique compounds after dedup: {len(grouped)}")
+
+    counts["final_rows"] = len(grouped)
 
     # SAVE
     grouped = grouped.sort_values("median_ic50_nM")
     grouped.to_csv(OUTPUT_FILE, index=False)
     print(f"\nSaved to {OUTPUT_FILE}")
+
+    # PROVENANCE SIDECAR
+    provenance = {
+        "schema_version": 1,
+        "stage": "reference_actives_fetch",
+        "chembl_db_version": status.get("chembl_db_version"),
+        "chembl_release_date": status.get("chembl_release_date"),
+        "api_version": None,
+        "api_version_note": (
+            "The ChEMBL data API exposes no version identifier. "
+            "status.json reports database version and release date only, and "
+            "the response carries no API-version header. Recorded as null "
+            "rather than guessed. Endpoint and raw payload are stored below."
+        ),
+        "status_endpoint": status_url,
+        "status_payload": status,
+        "fetch_started_utc": fetch_started_utc,
+        "fetch_completed_utc": datetime.now(timezone.utc).isoformat(),
+        "client_package": "chembl_webresource_client",
+        "client_package_version": client_version(),
+        "query_constraints": query_constraints,
+        "row_counts": counts,
+        "output_file": OUTPUT_FILE,
+        "output_sha256": sha256_of(OUTPUT_FILE),
+    }
+    with open(PROVENANCE_FILE, "w") as handle:
+        json.dump(provenance, handle, indent=2)
+        handle.write("\n")
+    print(f"Wrote provenance to {PROVENANCE_FILE}")
 
     # STATS
     print(f"\n--- Summary ---")

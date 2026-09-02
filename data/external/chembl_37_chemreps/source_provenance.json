@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "stage": "external_source_download",
+  "name": "chembl_37_chemreps",
+  "release": "chembl_37",
+  "url": "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_37/chembl_37_chemreps.txt.gz",
+  "doi": "10.6019/CHEMBL.database.37",
+  "file": {
+    "path": "/home/ares/projects/Benchmark/data/external/chembl_37_chemreps/chembl_37_chemreps.txt.gz",
+    "bytes": 292540141,
+    "sha256": "ea6181ce8dc7af41974e35b92e1febb0c9dcbe2c62f7ccc4a5d983ac19f696e7"
+  },
+  "publisher_checksum": "ea6181ce8dc7af41974e35b92e1febb0c9dcbe2c62f7ccc4a5d983ac19f696e7",
+  "publisher_checksum_algorithm": "sha256",
+  "publisher_checksum_verified": true,
+  "downloaded_utc": "2026-05-29T06:34:19+00:00",
+  "recorded_utc": "2026-07-31T10:14:40.805665+00:00",
+  "header_line": "chembl_id\tcanonical_smiles\tstandard_inchi\tstandard_inchi_key",
+  "columns": [
+    "chembl_id",
+    "canonical_smiles",
+    "standard_inchi",
+    "standard_inchi_key"
+  ],
+  "n_data_rows": 2897819,
+  "interpretation": "Unfiltered ChEMBL structure dump. No drug-likeness, size, or assay filtering applied by the publisher. Not a training-set holdout for any benchmark arm."
+}

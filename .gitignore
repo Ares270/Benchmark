@@ -226,8 +226,13 @@ CLAUDE.md
 # Local pretrained checkpoints and miscellaneous large artifacts
 Models & Miscellaneous/
 
-# Re-downloadable public source corpora (scripts and hashes stay versioned)
-data/external/
+# Re-downloadable public source corpora (scripts and hashes stay versioned).
+# data/external/** (contents) plus a directory re-include, not data/external/
+# (the directory), so the negation below is reachable: git cannot re-include
+# a file whose parent directory is itself excluded.
+data/external/**
+!data/external/**/
+!data/external/**/source_provenance.json
 
 # Run outputs — bulk artifacts are regenerable and huge.
 # results/* (contents), not results/ (directory), so the negation below is reachable.
