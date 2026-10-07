@@ -1,129 +1,269 @@
-# Benchmark
+# DYRK1A Generative Docking Benchmark
 
-Reproducible DYRK1A generative-model benchmarking, docking, and analysis.
+![status: pre-registered, runs pending](https://img.shields.io/badge/status-pre--registered%2C%20runs%20pending-blue)
+![license: MIT](https://img.shields.io/badge/license-MIT-green)
+![target: DYRK1A 7O7K](https://img.shields.io/badge/target-DYRK1A%207O7K-lightgrey)
+![docking: Smina / Vina scoring](https://img.shields.io/badge/docking-Smina%20%2F%20Vina-lightgrey)
 
-Current workflow decisions and commands:
+A reproducible docking-enrichment benchmark comparing three frozen generative
+molecular models and a naive chemical-space control against DYRK1A kinase
+through a shared Smina pipeline.
 
-- [Decoy, HPC, and candidate-analysis protocol](docs/DECOY_HPC_AND_CANDIDATE_PROTOCOL.md)
+---
 
-## Running a labelled benchmark locally
+## Overview
 
-This is the laptop path: build a cohort, then prepare + dock + analyse it in one
-process. It is for anything that fits on 4 CPU cores in a sitting. The chunking
-scripts in `src/harness/chunks.py` are for cluster scheduling and are not needed
-here — a local run calls the exact same preparation, docking, and analysis
-modules, so results do not drift between the two paths.
+This benchmark measures what a generative molecular model contributes to a
+docking campaign once the measuring instrument is held fixed. Four arms submit
+an identical raw molecule budget to one shared pipeline — molecule intake, a
+pre-registered pre-docking gate, Meeko ligand preparation, and Smina docking
+against a single hashed DYRK1A receptor — and are reported on generation
+quality, pipeline survival, docking-score distribution, and evaluated-parent
+chemistry. The arms are ordered by how much target information each model
+receives at inference: a property-matched chemical-space baseline, then Gen1
+(no target information), Gen2 (the DYRK1A protein sequence), and Gen3 (the
+locked 7O7K pocket geometry).
 
-### The template
+Three commitments define the design. No model is trained or fine-tuned locally;
+every arm runs a frozen, hash-authenticated public checkpoint. No model ever
+sees a docking score, so the evaluation cannot be optimised against. And
+failure is a reported result: invalid, duplicate, gate-failing,
+preparation-failing, and docking-failing molecules are counted and published,
+never replaced or topped up.
 
-One line. Edit the three numbers/names in it, paste the whole thing.
+## Arms
 
-```bash
-python -m src.harness.build_cohort results/RUNNAME --n-actives 10 --decoys-per-active 30 --seed 42 && python -m src.harness.run_local results/RUNNAME --name RUNNAME --workers 4
+| Arm | Model | Conditioning | What it isolates |
+| --- | --- | --- | --- |
+| Baseline | ChEMBL 37 property-matched draw | None | The chemical-space floor: what property-matched space alone scores |
+| Gen1 | GuacaMol SMILES-LSTM | None (target-unaware) | A pure learned chemical prior with no target information |
+| Gen2 | WarmMolGenOne | DYRK1A protein sequence | Sequence-conditioned generation |
+| Gen3 | Molexar 10M Omni | Locked 7O7K pocket geometry | 3D-pocket-conditioned generation |
+
+The baseline's primary mode is `property_matched`, locked before any model
+score is inspected; a `uniform` mode exists as a sensitivity floor and never
+substitutes for the primary control.
+
+### Frozen model boundary
+
+Each model arm is pinned to a specific published checkpoint, by repository
+revision and by the SHA-256 of every weight and tokenizer artefact it loads.
+The pins live in `configs/`, and `python -m src.benchmark doctor` verifies them
+before a run starts.
+
+| | Gen2 | Gen3 |
+| --- | --- | --- |
+| Repository | `gokceuludogan/WarmMolGenOne` | `fairydance/molexar-10m-omni` |
+| Revision | `1cbaeb72ba926f070c8f10349e9ee7041083135a` | `39be4ae96102506f6852b7627b27df0ae1ac8186` |
+| Architecture | Encoder–decoder: 12-layer protein RoBERTa encoder, 6-layer ChemBERTa decoder | `MolexarForCausalLM` with a GVP protein-pocket encoder, 16 layers |
+| Model input | DYRK1A sequence (UniProt Q13627, residues 127–485, matching the 7O7K kinase-domain construct) | The 7O7K pocket atom graph at the locked docking centre |
+| Sampling | `do_sample`, temperature 1.0, `top_k` 50, `top_p` 0.95 | `do_sample`, temperature 0.8, `top_k` 50, `top_p` 0.95 |
+| License | MIT | MIT |
+
+Nothing else reaches a model. No arm receives known actives, decoys, a
+receptor grid, docking scores, property targets, a pharmacophore, gate
+outcomes, or any post-generation optimisation signal. Every arm uses seed
+`20260801`, draws 10,000 raw molecules, and passes a uniformly selected
+1,000-row branch to intake with no validity filtering, deduplication,
+replacement, or top-up inside the generator.
+
+### Why this is a gradient, not an ablation
+
+This is an information gradient, not an architecture-only ablation. The four
+arms differ in architecture, training corpus, and conditioning simultaneously.
+Any difference between them must be discussed as the joint result of those
+differences. Relatedly, "no local training" does not mean "no learned target
+biology": each model's pretraining corpus is described in its specification,
+and where an exact target-disjointness audit is not possible, no disjointness
+is claimed.
+
+## Repository structure
+
+```
+src/        Pipeline source: molecule intake, docking harness, arm runners, analysis
+data/       Receptor, pocket definition, reference actives, and cohort inputs
+configs/    Frozen per-arm model specifications (checkpoint revision, hashes, sampling)
+docs/       Pre-registration records, protocol specifications, and runbooks
+tests/      Unit and integration tests for every pipeline stage
+cloud/      Google Batch container definition for distributed docking chunks
+results/    Run output root; each completed run writes an immutable directory here
 ```
 
-To adapt it, change three things and nothing else:
+Only `results/run_history.csv`, an append-only ledger of attempted runs, is
+version-controlled; run directories themselves are local artefacts.
 
-- `RUNNAME` — in all three places. Any name you like, no spaces.
-- `--n-actives 10` — how many actives.
-- `--decoys-per-active 30` — how many decoys per active.
-
-The `&&` means the docking only starts if the cohort built cleanly, so a typo in
-the first half cannot leave you docking a half-built cohort.
-
-Prerequisites, once per terminal:
+## Environment setup
 
 ```bash
+conda env create -f environment.yml
 conda activate dyrk1a-bench
-cd ~/projects/Benchmark
 ```
 
-Two things that will bite if you improvise on this:
+Gen3 additionally requires an isolated Python 3.13 environment, because Molexar
+pins PyTorch 2.9.1 and Transformers 5.8.0 while the validated docking stack is
+older. The two environments are deliberately not merged; the Gen3 runner
+crosses the boundary automatically and authenticates its inputs and outputs on
+each side. Per-arm checkpoint revisions, weight hashes, and sampling parameters
+are recorded in `configs/gen2_warmmolgenone.json` and
+`configs/gen3_molexar.json`, and the Gen1 architecture and sampling contract in
+[docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md](docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md).
 
-- **Do not wrap the values in `< >`.** Bash reads those as file redirection and
-  the command dies with a syntax error before Python ever starts.
-- **Do not split it into a variable block plus commands** unless you paste the
-  whole block in one go. Shell variables vanish when you open a new terminal,
-  and an empty `$VAR` silently expands to nothing — argparse then reports
-  `expected one argument`, which looks like a broken script but is an empty
-  variable.
-
-### What each knob does
-
-**`build_cohort`** — decides *which molecules* are in the run.
-
-| Flag | What it sets |
-| --- | --- |
-| `results/RUNNAME` | The cohort directory to create. Name it for what the run is, e.g. `smoke_5x50`, `pilot_50x50`. |
-| `--n-actives` | **The number of actives in the run.** Sampled from the 1,219 accepted DYRK1A actives. |
-| `--decoys-per-active` | **The number of decoys carried over per active.** Total decoys = actives × this. Omit the flag to take all 50 assigned decoys per active. |
-| `--seed 42` | The RNG seed for the active sample. Same seed + same active count = the same molecules, every time. Change it only to deliberately get a *different* subset (e.g. to check a result is not an artefact of one draw). |
-| `--first` | Take the actives first-by-sorted-ChEMBL-ID instead of sampling. Reproducible but **not representative** — ChEMBL order tracks deposition date, so it clusters chemical series. Do not use it for anything you will report. |
-
-Sizing the run: with `A` actives and `D` decoys per active, total molecules
-docked = `A + (A × D)`. Docking is roughly 15–40 s per ligand per core at
-`EXHAUSTIVENESS = 8`, so with 4 workers estimate `(A + A×D) × ~25 s / 4`.
-A 5 × 10 smoke test (55 molecules) is a few minutes;
-5 × 50 (255 molecules) is well under an hour; 50 × 50 (2,550 molecules) is an
-overnight job and is about the ceiling for this laptop.
-
-Decoys are **never re-sampled** here. `select_decoys.py` property-matched each
-decoy to a specific parent active once; `build_cohort` only carries that pairing
-over, best-ranked matches first. Picking decoys independently of the actives
-would break the matching and quietly turn a matched benchmark into an unmatched
-one — which inflates enrichment.
-
-**`run_local`** — decides *how the run executes and is scored*.
-
-| Flag | What it sets |
-| --- | --- |
-| `results/RUNNAME` | The cohort directory from step 1. Must already contain `actives.smi` and `decoys.smi`. |
-| `--name` | The run identifier used in the results directory and `run_history.csv`. Defaults to the cohort directory name. |
-| `--workers 4` | Parallel Smina jobs. 4 = one per physical core on the submarine. Do not raise it: each job already gets `SMINA_CPU = 1`, and oversubscribing slows the whole run. |
-| `--analysis-outdir` | Where the report is written. Defaults to `results/`. |
-| `--missing-policy` | How molecules that failed to dock are handled: `error` (default — stop and make you look at it), `exclude`, or `rank_last`. Keep `error` unless you have already inspected the failures and decided what they are. |
-| `--chemistry` | Adds chemical profiling from the intake tables. Requires `--active-intake` and `--decoy-intake`. **Only meaningful for a full cohort** — intake statistics describe every accepted molecule, not the docked subset, so on a 5-active smoke test the profile does not describe what you actually docked. |
-
-Docking parameters themselves (box centre/size, exhaustiveness, seed, num_modes,
-energy range, timeout) are **not** command-line flags. They live in
-`src/harness/config.py` and are identical for every cohort and every generation
-by design — changing them per run would make runs incomparable. If you change
-one, it changes for everything and previous results must be re-run.
-
-### Outputs
-
-```
-results/RUNNAME/
-    actives.smi, decoys.smi     # the cohort inputs
-    cohort.json                 # what was selected, seed, input hashes
-    ligands/{actives,decoys}/   # prepared 3D PDBQT
-    docking/{actives,decoys}/   # poses + scores.csv
-    run_local.json              # timing, hardware, input/output hashes
-results/RUNNAME_<timestamp>/
-    report.html, metrics.json, figures/, interactive/
-results/run_history.csv         # one appended row per run
-```
-
-Both JSON records hash their inputs and outputs, so any run can be traced back
-to the exact molecule set and code path that produced it.
-
-### Worked examples
-
-Each is one line — paste the whole line.
+## Preflight check
 
 ```bash
-# Smoke test: 5 actives, 10 decoys each = 50 decoys, 55 molecules total
-python -m src.harness.build_cohort results/smoke_5x50 --n-actives 5 --decoys-per-active 10 --seed 42 && python -m src.harness.run_local results/smoke_5x50 --name smoke_5x50 --workers 4
-
-# Fuller smoke: 5 actives, all 50 assigned decoys each = 250 decoys, 255 total
-python -m src.harness.build_cohort results/smoke_5x250 --n-actives 5 --seed 42 && python -m src.harness.run_local results/smoke_5x250 --name smoke_5x250 --workers 4
-
-# Pilot enrichment: 50 actives, 20 decoys each = 1,000 decoys (overnight)
-python -m src.harness.build_cohort results/pilot_50x20 --n-actives 50 --decoys-per-active 20 --seed 42 && python -m src.harness.run_local results/pilot_50x20 --name pilot_50x20 --workers 4
+python -m src.benchmark doctor
 ```
 
-A note on reading small runs: ROC-AUC and enrichment factors from a 5-active
-cohort are not evidence about the target. They confirm the pipeline runs end to
-end and the report renders. Enrichment numbers only become worth quoting once
-the active set is large enough for the confidence interval to be narrower than
-the effect you are claiming.
+This authenticates every input a run depends on before any compute is spent:
+the Smina binary, the receptor and its locked docking box, the reference
+actives, the cached naive baseline cohort, all three model bundles against
+their recorded hashes, and the isolated Gen3 runtime. It generates nothing and
+docks nothing. A successful check reports that all four registered arms can be
+launched.
+
+## Running the benchmark
+
+Run names must be new on every attempt; the runners refuse to write into an
+existing directory. Replace the upper-case placeholders below, and do not wrap
+them in angle brackets — Bash reads those as redirection.
+
+**The registered four-arm campaign.** This is the single command for the real
+comparison. It exposes no scientific knobs: each arm uses seed `20260801`,
+produces or draws its locked 10,000-molecule cohort, submits exactly 1,000 raw
+rows to the shared pipeline, and the fairness-gated four-arm comparison is
+written at the end. It stops at the first failure.
+
+```bash
+python -m src.benchmark run all results/REGISTERED_RUN_NAME --workers 4
+```
+
+**A pilot plumbing check for one arm.** Pilot runs are explicitly labelled as
+such and are not registered results.
+
+```bash
+python -m src.benchmark run gen3 results/PILOT_RUN_NAME --pilot --raw-n 100 --dock-n 10 --workers 4
+```
+
+**The labelled validation cohort.** This builds a reproducible cohort of
+accepted DYRK1A actives plus property-matched decoys, docks it, and writes the
+labelled enrichment report that tests the harness itself.
+
+```bash
+python -m src.harness.build_cohort results/VALIDATION_RUN_NAME --n-actives 10 --decoys-per-active 30 --seed 42
+python -m src.harness.run_local results/VALIDATION_RUN_NAME --name VALIDATION_RUN_NAME --workers 4 --missing-policy error
+```
+
+`--workers` is an operational setting, not a scientific one. The receptor, box,
+exhaustiveness, docking seed, number of modes, energy range, and per-ligand
+timeout live in `src/harness/config.py` as a single source of truth; changing
+any of them makes earlier and later arms incomparable and requires rerunning
+every arm in the comparison.
+
+## Metrics
+
+Metrics fall into three buckets, kept deliberately separate.
+
+- **Harness validation** — computed only on the labelled active/decoy cohort:
+  ROC AUC, BEDROC, enrichment factors at fixed list fractions, and bootstrap
+  confidence intervals. These judge the instrument, not any generative model.
+- **Generative quality** — per arm: SMILES validity, parent uniqueness,
+  survival at each funnel stage (submitted, accepted at intake, passed the
+  pre-docking gate, prepared, successfully scored), and measured compute cost.
+- **Per-molecule quality** — docking-score distribution, ligand efficiency, and
+  twelve separately reported chemical properties (molecular weight, cLogP,
+  TPSA, hydrogen-bond donors and acceptors, rotatable bonds, ring and aromatic
+  ring counts, fraction Csp³, formal charge, QED, and synthetic accessibility).
+
+Ligand efficiency — docking score divided by heavy atom count — is computed and
+reported alongside the raw score, never in place of it. Smina's scoring
+function sums per-atom contributions, so a larger molecule scores better for
+free; reporting both lets molecular size and docking performance be read side
+by side. Ligand efficiency does not enter any ranking metric.
+
+### The funnel
+
+Survival is reported as absolute counts at six fixed points, so attrition is
+visible rather than averaged away:
+
+1. raw generated or source rows;
+2. rows submitted to intake;
+3. molecules accepted at intake;
+4. molecules that passed the shared pre-docking gate;
+5. prepared PDBQT files;
+6. successfully scored molecules.
+
+Each stage authenticates the previous stage's output against a recorded hash
+and refuses to continue on a mismatch. A completed run directory preserves its
+exact input and subsample, those hashes, per-stage summaries, the list of
+failures with reasons, timings, scores, and the rendered report. The gate is
+shared by every unlabelled arm and is never tuned per model.
+
+### What is deliberately not computed
+
+Candidate cohorts have no activity labels, so ROC AUC, BEDROC, and enrichment
+are deliberately not computed for them. No composite score is produced and no
+arm is declared a winner: the trade-offs between validity, uniqueness, funnel
+survival, chemistry, docking distribution, and compute are left visible, and
+interpreting them is the reader's job. A docking score is a computational
+prioritisation signal; it is not evidence of biochemical activity.
+
+## Design commitments
+
+- **No local training or fine-tuning.** Every model arm runs a frozen public
+  checkpoint pinned by repository revision and weight SHA-256.
+- **No docking-score reward.** No model receives a score, a gate outcome, or
+  any evaluation feedback, so the measurement cannot be optimised against.
+- **The information gradient is the experiment.** Arms differ in conditioning
+  by design; this is not presented as a controlled architecture-only ablation.
+- **Failure is reported, never repaired.** Molecules lost at any funnel stage
+  are counted and published. There is no top-up, no replacement, and no
+  per-model gate tuning.
+- **Pre-registered gate and thresholds.** Both were committed and tagged before
+  any registered run (`predock-gate-v1`, `validation-threshold-v1`).
+- **Hash-chained provenance at every stage.** Each stage authenticates its
+  inputs against hashes recorded by the previous stage and refuses to proceed
+  on a mismatch.
+- **Immutable run directories.** Runs are assembled in a working directory and
+  atomically renamed on completion; an existing name is never overwritten.
+
+## Pre-registration
+
+Two sets of constants are frozen in git history, tagged, and dated before any
+registered run was executed. The generative-arm pre-docking gate constants are
+frozen at commit `fd1574a`, tagged `predock-gate-v1` (2026-07-30). The harness
+validation thresholds — ROC AUC ≥ 0.65 and EF₁% ≥ 5.00 on the labelled
+active/decoy cohort — are frozen at commit `9de5567`, tagged
+`validation-threshold-v1` (2026-08-30). The purpose of fixing both in advance
+is that a threshold chosen after seeing the number is not a threshold but a
+knob; because the tags predate every registered run, the bar cannot be moved to
+accommodate a result. See
+[docs/PREDOCK_GATE_AND_NAIVE_BASELINE_SPEC.md](docs/PREDOCK_GATE_AND_NAIVE_BASELINE_SPEC.md)
+and
+[docs/HARNESS_VALIDATION_THRESHOLD.md](docs/HARNESS_VALIDATION_THRESHOLD.md).
+
+## Status
+
+The pipeline is complete and has been exercised end to end on pilot runs; all
+four arms, the shared gate, the docking harness, and both analysis modes run to
+completion and produce their reports. Two campaigns remain outstanding: the
+registered harness-validation run against the pre-registered thresholds, and
+the registered four-arm generative comparison.
+
+No benchmark result is reported here. Pilot and smoke runs existed only to
+prove plumbing; their numbers are not results, are not evidence about any arm,
+and are deliberately not cited in this document.
+
+## Citation
+
+```bibtex
+@misc{georgiou2026dyrk1a,
+  author = {Georgiou, Ares},
+  title  = {DYRK1A Generative Docking Benchmark},
+  year   = {2026},
+  note   = {Preprint in preparation}
+}
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
