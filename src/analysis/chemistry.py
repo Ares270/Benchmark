@@ -34,6 +34,12 @@ PROPERTY_SPECS = (
 PROPERTY_COLUMNS = tuple(spec[0] for spec in PROPERTY_SPECS)
 PROPERTY_LABELS = {key: label for key, label, _ in PROPERTY_SPECS}
 
+# Molecule intake writes a heavy atom count for every accepted parent. It is
+# carried through for ligand-efficiency normalisation, which divides a docking
+# score by molecular size. It is deliberately NOT a PROPERTY_COLUMN: it is a
+# size descriptor used as a denominator, not a reported chemical property.
+HEAVY_ATOM_COLUMN = "heavy_atom_count"
+
 
 
 #### checks intake identity #####
@@ -147,6 +153,16 @@ def _load_intake(path: Path, cohort: str) -> tuple[pd.DataFrame, dict]:
             )
         accepted[column] = numeric.astype(float)
 
+    # Carried only when intake recorded it, so an intake table written before
+    # this column existed still loads; candidate analysis fails loud instead if
+    # it needs the count and cannot find it.
+    carried = []
+    if HEAVY_ATOM_COLUMN in accepted.columns:
+        accepted[HEAVY_ATOM_COLUMN] = pd.to_numeric(
+            accepted[HEAVY_ATOM_COLUMN], errors="coerce"
+        ).astype(float)
+        carried.append(HEAVY_ATOM_COLUMN)
+
     recorded_count = summary.get("counts", {}).get("accepted_for_preparation")
     if recorded_count != len(accepted):
         raise AnalysisInputError(
@@ -156,7 +172,7 @@ def _load_intake(path: Path, cohort: str) -> tuple[pd.DataFrame, dict]:
 
     accepted["cohort"] = cohort
     accepted = accepted[
-        ["molecule_id", "parent_smiles", "cohort", *PROPERTY_COLUMNS]
+        ["molecule_id", "parent_smiles", "cohort", *PROPERTY_COLUMNS, *carried]
     ]
     counts = summary.get("counts", {})
     metrics = summary.get("aggregate_metrics", {})

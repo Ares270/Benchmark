@@ -51,6 +51,10 @@ class CandidateComparisonTests(unittest.TestCase):
                     "median": -7.0,
                     "mean": -7.1,
                 },
+                "le_distribution": {
+                    "median": -0.35,
+                    "mean": -0.355,
+                },
             },
             "chemistry": {
                 "properties": {
@@ -102,6 +106,46 @@ class CandidateComparisonTests(unittest.TestCase):
             self.assertTrue(report.is_file())
             self.assertIn("no overall winner score", report.read_text(encoding="utf-8"))
             self.assertTrue((report.parent / "comparison.json").is_file())
+
+    def test_ligand_efficiency_is_tabulated_beside_the_raw_score(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = self._files(root)
+            _, summary, _, _ = build_candidate_comparison(paths)
+
+            self.assertEqual(summary["le_median"].tolist(), [-0.35] * 4)
+            self.assertEqual(summary["le_mean"].tolist(), [-0.355] * 4)
+            # Raw score and LE stay separate columns; neither is merged away.
+            for column in ("score_p10", "score_median", "score_mean", "le_median", "le_mean"):
+                self.assertIn(column, summary.columns)
+
+            report = write_candidate_comparison(paths, root / "comparison")
+            rendered = report.read_text(encoding="utf-8")
+            self.assertIn("LE median (kcal/mol per heavy atom)", rendered)
+            self.assertIn("LE mean (kcal/mol per heavy atom)", rendered)
+            self.assertIn("Score median (kcal/mol)", rendered)
+
+    def test_missing_le_distribution_reports_unavailable_without_raising(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = self._files(root)
+            # One older run, written before ligand-efficiency normalisation.
+            older = json.loads(paths[0].read_text(encoding="utf-8"))
+            del older["docking"]["le_distribution"]
+            paths[0].write_text(json.dumps(older), encoding="utf-8")
+
+            _, summary, _, _ = build_candidate_comparison(paths)
+            # None becomes NaN in a float column; either way it is absent, and
+            # it is never filled in with a number.
+            self.assertTrue(pd.isna(summary.loc["generation_1", "le_median"]))
+            self.assertTrue(pd.isna(summary.loc["generation_1", "le_mean"]))
+            self.assertEqual(summary.loc["generation_2", "le_median"], -0.35)
+
+            report = write_candidate_comparison(paths, root / "comparison")
+            rendered = report.read_text(encoding="utf-8")
+            self.assertIn("unavailable", rendered)
+            # The arm that does have LE still reports its number.
+            self.assertIn("-0.3500", rendered)
 
     def test_unequal_submitted_budget_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

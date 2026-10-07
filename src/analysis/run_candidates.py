@@ -25,6 +25,7 @@ from src.harness import runtime
 
 from . import provenance
 from .chemistry import (
+    HEAVY_ATOM_COLUMN,
     PROPERTY_COLUMNS,
     PROPERTY_LABELS,
     PROPERTY_SPECS,
@@ -39,6 +40,13 @@ from .report_theme import plotly_config, polish_plotly_figure, report_css, repor
 
 CANDIDATE_SCHEMA_VERSION = 1
 VALID_ROLES = ("model", "naive_baseline", "pilot", "unassigned")   # Roles for each cohort
+
+# Ligand efficiency: docking score per heavy atom.  Smina/Vina scores sum
+# per-atom contributions, so a larger molecule scores better for free.  LE
+# normalises for size so that size and docking performance can be read side by
+# side.  It is reported ALONGSIDE the raw score and never replaces it, and it
+# never enters any ranking metric.
+LE_COLUMN = "le_kcal_mol_per_heavy_atom"
 
 
 
@@ -74,6 +82,43 @@ def _score_distribution(values: np.ndarray) -> dict:
         "p95": _finite_or_none(np.quantile(values, 0.95)),
         "maximum_worst": _finite_or_none(np.max(values)),
     }
+
+
+def _le_distribution(values: np.ndarray) -> dict:
+    """The same twelve summary numbers, over observed ligand efficiencies.
+
+    Direction is inherited from the raw score: LE is lower_is_better, so
+    minimum_best is the most negative (best) efficiency and maximum_worst the
+    least negative.
+    """
+
+    return _score_distribution(values)
+
+
+def _ligand_efficiency(joined: pd.DataFrame) -> pd.Series:
+    """score / heavy_atoms, only where both are observed and usable.
+
+    A row with no docking score gets NaN.  Nothing is imputed and nothing is
+    filled with zero: a molecule that was never scored has no efficiency, and
+    saying otherwise would invent data.
+    """
+
+    if HEAVY_ATOM_COLUMN not in joined.columns:
+        raise AnalysisInputError(
+            "Candidate intake table has no "
+            f"{HEAVY_ATOM_COLUMN!r} column, so ligand efficiency cannot be "
+            "computed; re-run molecule intake to regenerate molecules.csv"
+        )
+    heavy = pd.to_numeric(joined[HEAVY_ATOM_COLUMN], errors="coerce").astype(float)
+    score = joined["score"].astype(float)
+    # A non-positive or non-finite denominator is not a usable size; guard it
+    # rather than emitting an infinity.
+    usable = score.notna() & heavy.notna() & np.isfinite(heavy) & heavy.gt(0)
+    return pd.Series(
+        np.where(usable, score / heavy.where(usable, np.nan), np.nan),
+        index=joined.index,
+        dtype=float,
+    )
 
 
 def _load_docking_cost(scores_path: Path) -> tuple[dict | None, Path | None]:
@@ -218,6 +263,7 @@ def build_candidate_profile(
     if "reason" not in joined:
         joined["reason"] = ""
     joined["reason"] = joined["reason"].fillna("")
+    joined[LE_COLUMN] = _ligand_efficiency(joined)
     observed = joined.loc[joined["score"].notna()].copy()
     if observed.empty:
         raise AnalysisInputError("Candidate cohort contains no observed docking scores")
@@ -250,6 +296,21 @@ def build_candidate_profile(
             "score_distribution_kcal_mol": _score_distribution(
                 observed["score"].to_numpy(float)
             ),
+            "le_distribution": _le_distribution(
+                joined.loc[joined[LE_COLUMN].notna(), LE_COLUMN].to_numpy(float)
+            ),
+            "le_normalisation": {
+                "formula": f"score_kcal_mol / {HEAVY_ATOM_COLUMN}",
+                "descriptor": (
+                    "RDKit GetNumHeavyAtoms on the accepted parent at molecule "
+                    "intake"
+                ),
+                "score_direction": "lower_is_better",
+                "note": (
+                    "Reported alongside raw score; does not modify any ranking "
+                    "metric."
+                ),
+            },
         },
         "chemistry": {
             "scope": "all evaluated parents accepted by molecule intake",
@@ -376,6 +437,10 @@ def _render_report(joined: pd.DataFrame, profile: dict) -> str:
     docking = profile["docking"]
     intake = profile["intake"]
     distribution = docking["score_distribution_kcal_mol"]
+    le = docking["le_distribution"]
+    le_median = (
+        f"{le['median']:.4f}" if le.get("median") is not None else "n/a"
+    )
     property_rows = []
     for column in PROPERTY_COLUMNS:
         values = profile["chemistry"]["properties"][column]
@@ -432,7 +497,8 @@ def _render_report(joined: pd.DataFrame, profile: dict) -> str:
 <style>{report_css()}</style></head>
 <body>{toolbar}<h1>{html.escape(profile['name'])}: candidate-only analysis</h1>
 <p>Role: <strong>{html.escape(profile['role'])}</strong>. This cohort has no active/decoy labels, so AUC, BEDROC, and enrichment are deliberately not computed. Docking prioritizes candidates; it does not prove biochemical activity.</p>
-<div class="metrics"><div class="metric">Submitted<strong>{intake['submitted_rows']:,}</strong></div><div class="metric">Validity<strong>{100*intake['validity']:.2f}%</strong></div><div class="metric">Parent uniqueness<strong>{100*intake['parent_uniqueness']:.2f}%</strong></div><div class="metric">Accepted<strong>{intake['accepted_for_preparation']:,}</strong></div><div class="metric">Docking coverage<strong>{100*docking['coverage_over_accepted_parents']:.2f}%</strong></div><div class="metric">Median score<strong>{distribution['median']:.3f}</strong>kcal/mol</div></div>
+<div class="metrics"><div class="metric">Submitted<strong>{intake['submitted_rows']:,}</strong></div><div class="metric">Validity<strong>{100*intake['validity']:.2f}%</strong></div><div class="metric">Parent uniqueness<strong>{100*intake['parent_uniqueness']:.2f}%</strong></div><div class="metric">Accepted<strong>{intake['accepted_for_preparation']:,}</strong></div><div class="metric">Docking coverage<strong>{100*docking['coverage_over_accepted_parents']:.2f}%</strong></div><div class="metric">Median score<strong>{distribution['median']:.3f}</strong>kcal/mol</div><div class="metric">Median ligand efficiency<strong>{le_median}</strong>kcal/mol per heavy atom</div></div>
+<p>Ligand efficiency is the raw docking score divided by heavy atom count, reported beside the raw score because Smina sums per-atom contributions and therefore rewards size. It normalises for molecular size; it does not replace the raw score and does not enter any ranking.</p>
 <div class="card"><strong>Neutral interpretation</strong><p>{html.escape(str(neutral_summary))}</p></div>
 <div class="card">{overview_div}</div>
 {gallery}

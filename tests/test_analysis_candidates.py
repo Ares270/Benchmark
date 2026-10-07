@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.analysis.dataset import AnalysisInputError
 from src.analysis.run_candidates import (
+    LE_COLUMN,
     build_candidate_profile,
     run_candidate_analysis,
 )
@@ -122,6 +123,100 @@ class CandidateAnalysisTests(unittest.TestCase):
             )
             self.assertEqual(run_log["outputs"]["report"]["path"], str(report.resolve()))
 
+
+    def test_ligand_efficiency_is_score_over_heavy_atoms_and_never_imputed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scores, intake = self._inputs(Path(temporary))
+            joined, profile = build_candidate_profile(
+                scores,
+                intake,
+                name="generation_1",
+                role="model",
+            )
+
+            indexed = joined.set_index("molecule_id")
+            # CCO and c1ccccc1 both have exactly 3 and 6 heavy atoms.
+            self.assertEqual(indexed.loc["c1", "heavy_atom_count"], 3)
+            self.assertEqual(indexed.loc["c2", "heavy_atom_count"], 6)
+            self.assertAlmostEqual(
+                indexed.loc["c1", LE_COLUMN], -7.1000 / 3
+            )
+            self.assertAlmostEqual(
+                indexed.loc["c2", LE_COLUMN], -6.5000 / 6
+            )
+
+            # c3 was accepted at intake but never scored: no score, no LE.
+            self.assertTrue(pd.isna(indexed.loc["c3", "score"]))
+            self.assertTrue(pd.isna(indexed.loc["c3", LE_COLUMN]))
+
+            le = profile["docking"]["le_distribution"]
+            self.assertEqual(le["n"], 2)
+            self.assertAlmostEqual(le["minimum_best"], -7.1000 / 3)
+            self.assertAlmostEqual(le["maximum_worst"], -6.5000 / 6)
+
+    def test_le_distribution_mirrors_score_distribution_structure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scores, intake = self._inputs(Path(temporary))
+            _, profile = build_candidate_profile(
+                scores,
+                intake,
+                name="generation_1",
+                role="model",
+            )
+            docking = profile["docking"]
+
+            self.assertEqual(
+                set(docking["le_distribution"]),
+                set(docking["score_distribution_kcal_mol"]),
+            )
+            self.assertEqual(
+                set(docking["le_distribution"]),
+                {
+                    "n",
+                    "mean",
+                    "std",
+                    "minimum_best",
+                    "p05",
+                    "p10",
+                    "p25",
+                    "median",
+                    "p75",
+                    "p90",
+                    "p95",
+                    "maximum_worst",
+                },
+            )
+            self.assertEqual(
+                docking["le_normalisation"],
+                {
+                    "formula": "score_kcal_mol / heavy_atom_count",
+                    "descriptor": (
+                        "RDKit GetNumHeavyAtoms on the accepted parent at "
+                        "molecule intake"
+                    ),
+                    "score_direction": "lower_is_better",
+                    "note": (
+                        "Reported alongside raw score; does not modify any "
+                        "ranking metric."
+                    ),
+                },
+            )
+
+    def test_ligand_efficiency_does_not_disturb_the_raw_score_distribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scores, intake = self._inputs(Path(temporary))
+            _, profile = build_candidate_profile(
+                scores,
+                intake,
+                name="generation_1",
+                role="model",
+            )
+            raw = profile["docking"]["score_distribution_kcal_mol"]
+
+            self.assertEqual(raw["n"], 2)
+            self.assertAlmostEqual(raw["minimum_best"], -7.1000)
+            self.assertAlmostEqual(raw["maximum_worst"], -6.5000)
+            self.assertAlmostEqual(raw["median"], -6.8000)
 
     def test_score_id_outside_intake_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

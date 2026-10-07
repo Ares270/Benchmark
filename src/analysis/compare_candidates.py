@@ -65,6 +65,22 @@ def _load_run(path: Path) -> dict:                                              
     return run
 
 
+def _optional_float(value: object) -> float | None:
+    """A reported number, or None when a run did not record one."""
+
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if pd.notna(number) else None
+
+
+def _le_text(value: object) -> str:
+    return "unavailable" if value is None or pd.isna(value) else f"{float(value):.4f}"
+
+
 def _scientific_protocol(run: dict) -> dict:
     protocol = run.get("screening_protocol")
     if not isinstance(protocol, dict):
@@ -148,6 +164,10 @@ def build_candidate_comparison(
         intake = run["intake"]
         docking = run["docking"]
         scores = docking["score_distribution_kcal_mol"]
+        # Runs written before ligand-efficiency normalisation existed have no
+        # le_distribution.  That is reported as unavailable, not as zero, and it
+        # is not a comparability failure: LE is additive to the raw score.
+        le = docking.get("le_distribution") or {}
         cost = run.get("computational_cost")
         if not isinstance(cost, dict):
             raise CandidateComparisonError(
@@ -166,6 +186,8 @@ def build_candidate_comparison(
                 "score_p10": float(scores["p10"]),
                 "score_median": float(scores["median"]),
                 "score_mean": float(scores["mean"]),
+                "le_median": _optional_float(le.get("median")),
+                "le_mean": _optional_float(le.get("mean")),
                 "estimated_cpu_slot_hours": float(
                     cost.get("timing", {}).get(
                         "estimated_requested_cpu_slot_hours",
@@ -260,6 +282,9 @@ def _arm_cards(summary: pd.DataFrame) -> str:
             f'<h3>{html.escape(str(method))}</h3>'
             '<div class="comparison-score"><small>Median Smina</small>'
             f'<strong>{row["score_median"]:.3f}</strong><span>kcal/mol</span></div>'
+            '<div class="comparison-score"><small>Median ligand efficiency</small>'
+            f'<strong>{_le_text(row["le_median"])}</strong>'
+            '<span>kcal/mol per heavy atom</span></div>'
             '<div class="comparison-arm-stats">'
             f'<span><small>Valid</small>{100 * row["validity"]:.1f}%</span>'
             f'<span><small>Unique</small>{100 * row["parent_uniqueness"]:.1f}%</span>'
@@ -396,6 +421,12 @@ def _render_comparison(
     display_summary = summary.copy()
     for column in ("validity", "parent_uniqueness", "docking_coverage", "successful_per_submitted"):
         display_summary[column] *= 100
+    # Rendered as text so that a run without ligand efficiency reads
+    # "unavailable" rather than an empty cell or a fabricated number.  The raw
+    # score columns and the LE columns stay separate and separately labelled;
+    # they are never merged into one figure.
+    for column in ("le_median", "le_mean"):
+        display_summary[column] = [_le_text(value) for value in display_summary[column]]
     display_summary = display_summary.rename(
         columns={
             "validity": "Validity (%)",
@@ -405,6 +436,8 @@ def _render_comparison(
             "score_p10": "Score p10 (kcal/mol)",
             "score_median": "Score median (kcal/mol)",
             "score_mean": "Score mean (kcal/mol)",
+            "le_median": "LE median (kcal/mol per heavy atom)",
+            "le_mean": "LE mean (kcal/mol per heavy atom)",
             "estimated_cpu_slot_hours": "Estimated CPU-slot h",
         }
     )
@@ -445,7 +478,7 @@ def _render_comparison(
 {_arm_cards(summary)}
 <div class="card"><span class="eyebrow">Neutral interpretation</span><p>{html.escape(neutral)}</p></div>
 <div class="card"><strong>Naïve baseline source</strong><p>{html.escape(str(baseline['source_description']))}</p></div>
-<h2>Comparable outcomes</h2><p>Percentages use the raw submitted budget as denominator. Score boxes show every observed score when all four ranking files are available; otherwise the report falls back to p10, median, and mean summaries.</p>
+<h2>Comparable outcomes</h2><p>Percentages use the raw submitted budget as denominator. Score boxes show every observed score when all four ranking files are available; otherwise the report falls back to p10, median, and mean summaries. Raw Smina score and ligand efficiency (score divided by heavy atom count) are listed in separate labelled columns and are never combined: the raw score ranks, and ligand efficiency only says how much of that score is explained by molecular size. An arm whose run predates ligand-efficiency normalisation reads <code>unavailable</code>.</p>
 <div class="card">{summary_table}</div><div class="plotcard">{quality_div}</div>
 <h2>Pipeline survival</h2><p>Absolute molecule counts preserve attrition through intake, the locked pre-dock gate, ligand preparation, and docking.</p><div class="plotcard">{funnel_div}</div>
 <h2>Mean evaluated-parent properties</h2><p>Each panel has its own units and scale. These properties are not collapsed into docking affinity.</p>
