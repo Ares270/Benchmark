@@ -87,6 +87,7 @@ dependencies:
   - pthread-stubs=0.3=h0ce48e5_1
   - pycairo=1.29.0=py310h8c3e0f7_1
   - pyparsing=3.3.2=pyhcf101f3_0
+  - pytest=9.2.0=pyhc364b38_1
   - python=3.10.20=h17756b0_1
   - python-dateutil=2.9.0.post0=pyhe01879c_2
   - python-tzdata=2026.2=pyhd8ed1ab_0
@@ -192,4 +193,3 @@ dependencies:
       - urllib3==2.7.0
       - werkzeug==3.1.8
       - xarray==2025.6.1
-prefix: /home/ares/miniconda3/envs/dyrk1a-bench
