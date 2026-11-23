@@ -3,7 +3,6 @@
 **Decision date:** 2026-08-10  
 **Status:** official checkpoint authenticated; compatibility loader and pipeline
 validation implemented  
-**Owner of scientific decisions:** Ares
 
 ## 1. Scientific role
 
