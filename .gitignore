@@ -247,6 +247,7 @@ docs/
 docs/*
 !docs/PREDOCK_GATE_AND_NAIVE_BASELINE_SPEC.md
 !docs/HARNESS_VALIDATION_THRESHOLD.md
+!docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md
 # Local working status doc (superseded by docs/)
 PROJECT_STATUS_2026-07-20.md
 
@@ -260,3 +261,28 @@ results/10x30_smoke_run_10A_smaller_box_2026-07-28_181332_576010Z/
 # Compute bundles
 *.tar.gz
 *.tar.gz.sha256
+
+# Credentials and private keys. Never commit these; the bare `.env` rule above
+# does not match suffixed variants, and a cloud shell drops config JSON with
+# live tokens into whatever directory it is unpacked in.
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*service-account*.json
+*service_account*.json
+*credentials*.json
+gha-creds-*.json
+.gcloud/
+gcloud-key.json
+
+# Cloud Shell / remote session home directories copied into the repo. These are
+# whole home dumps (shell history, docker and editor tokens, agent credentials),
+# not run output. Keep them out of the tree entirely.
+Validation Run/
