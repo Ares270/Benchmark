@@ -1,6 +1,6 @@
 # DYRK1A Generative Docking Benchmark
 
-![status: pre-registered, runs pending](https://img.shields.io/badge/status-pre--registered%2C%20runs%20pending-blue)
+![status: campaigns complete](https://img.shields.io/badge/status-campaigns--complete-brightgreen)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
 ![target: DYRK1A 7O7K](https://img.shields.io/badge/target-DYRK1A%207O7K-lightgrey)
 ![docking: Smina / Vina scoring](https://img.shields.io/badge/docking-Smina%20%2F%20Vina-lightgrey)
@@ -108,6 +108,101 @@ are recorded in `configs/gen2_warmmolgenone.json` and
 `configs/gen3_molexar.json`, and the Gen1 architecture and sampling contract in
 [docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md](docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md).
 
+## Model bundles and generated inputs
+
+Five of the inputs `doctor` checks are deliberately **not** version-controlled:
+three published model bundles, the isolated Gen3 runtime, and the naive
+baseline cohort. They are large, redistributable from their own upstream
+sources under their own licences, or regenerable from a recorded seed. **A
+fresh clone therefore fails preflight until these are in place. That is
+expected, not a broken checkout.**
+
+Everything below lands under `Models & Miscellaneous/` or `data/generated/`,
+both Git-ignored. No bundle is re-hosted here. Every revision and file hash is
+pinned in `configs/` or the Gen1 spec, and `doctor` checks each artefact
+against its recorded byte count and SHA-256 before a model is ever
+deserialised — so a wrong revision or a truncated download fails loudly
+instead of quietly changing a result.
+
+### Gen1 — GuacaMol SMILES-LSTM checkpoint
+
+Target path `Models & Miscellaneous/model_final_0.473.pt`, from
+`BenevolentAI/guacamol_baselines` at pinned commit
+`ae43219c89d5db134028336243f508606d81995e`, directory
+`smiles_lstm_hc/pretrained_model` (MIT). Expected identity: 101,148,783 bytes,
+SHA-256 `da1be33b519868ba3a0befabe5b018d247bfd65ccaae7d5fdac4c804f23580f3`.
+The matching `model_final_0.473.json` config sits beside it in the same
+upstream directory. Full provenance and the loader's authentication contract
+are in
+[docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md](docs/GEN1_GUACAMOL_SMILES_LSTM_SPEC.md).
+
+### Gen2 — WarmMolGenOne and its SMILES tokenizer
+
+```bash
+huggingface-cli download gokceuludogan/WarmMolGenOne \
+  --revision 1cbaeb72ba926f070c8f10349e9ee7041083135a \
+  --local-dir "Models & Miscellaneous"
+
+huggingface-cli download seyonec/PubChem10M_SMILES_BPE_450k \
+  --revision c18fccd09b3326bf2d4633412c256d7db872156d \
+  --local-dir "Models & Miscellaneous/PubChem10M_SMILES_BPE_450k"
+```
+
+The encoder-decoder weights (`pytorch_model.bin`, 766,604,630 bytes) land in
+the `Models & Miscellaneous/` root; the protein tokenizer ships with them and
+the SMILES tokenizer comes from the second repository. Per-file hashes are in
+`configs/gen2_warmmolgenone.json`.
+
+### Gen3 — Molexar bundle and isolated runtime
+
+```bash
+huggingface-cli download fairydance/molexar-10m-omni \
+  --revision 39be4ae96102506f6852b7627b27df0ae1ac8186 \
+  --local-dir "Models & Miscellaneous/molexar-10m-omni"
+```
+
+Gen3 also needs its own interpreter at
+`Models & Miscellaneous/molexar-env/bin/python`, because Molexar pins a newer
+PyTorch and Transformers than the validated docking stack. Create it with
+Python 3.13 and install the runtime recorded in `configs/gen3_molexar.json`
+(torch 2.9.1+cpu, transformers 5.8.0, tokenizers 0.22.2, rdkit 2025.9.6,
+numpy 2.4.4, scipy 1.17.1), then the two official sources at their pinned
+revisions:
+
+```bash
+conda create -p "Models & Miscellaneous/molexar-env" python=3.13 -y
+# install the pinned runtime from configs/gen3_molexar.json, then:
+#   github.com/fairydance/Molexar          @ d874224a577822fe2c19ad99143d58125a369d11
+#   github.com/fairydance/Fragment-SELFIES @ 09f00f8aa5420e2da89fc68bfc6793f4868e9653
+```
+
+The Gen3 runner crosses the environment boundary itself and authenticates its
+inputs and outputs on each side.
+
+### Naive baseline cohort
+
+Regenerable; nothing needs downloading except the ChEMBL 37 source. Fetch the
+bulk chemreps file recorded in
+`data/external/chembl_37_chemreps/source_provenance.json` (ChEMBL 37,
+DOI 10.6019/CHEMBL.database.37, SHA-256
+`ea6181ce8dc7af41974e35b92e1febb0c9dcbe2c62f7ccc4a5d983ac19f696e7`) into
+`data/external/chembl_37_chemreps/`, then rebuild the registered cohort:
+
+```bash
+python -m src.generation.naive_baseline \
+  --mode property_matched \
+  --source-file data/external/chembl_37_chemreps/chembl_37_chemreps.txt.gz \
+  --source-description "ChEMBL 37 bulk chemreps, full set, no filtering" \
+  --actives data/reference/dyrk1a_actives_chembl.csv \
+  --n 10000 \
+  --seed 20260801 \
+  --outdir data/generated/naive_property_matched_20260801
+```
+
+The seed and output path are the registered ones, so this reproduces the exact
+cohort the campaign used. `src/utils/record_source_provenance.py` re-records
+the source hash if you refetch.
+
 ## Preflight check
 
 ```bash
@@ -119,7 +214,24 @@ the Smina binary, the receptor and its locked docking box, the reference
 actives, the cached naive baseline cohort, all three model bundles against
 their recorded hashes, and the isolated Gen3 runtime. It generates nothing and
 docks nothing. A successful check reports that all four registered arms can be
-launched.
+launched; it exits non-zero and names each missing or mismatched input
+otherwise.
+
+On a fresh clone the first five checks pass and the last five fail, because the
+model bundles and the generated cohort are not version-controlled. See
+[Model bundles and generated inputs](#model-bundles-and-generated-inputs) for
+how to obtain each one. The receptor, the docking box, and the reference
+actives are tracked, so the harness-validation path needs no downloads.
+
+## Tests
+
+```bash
+python -m pytest tests
+```
+
+Scope the command to `tests`. A bare `pytest` from the repository root also
+collects the vendored third-party suites under `Models & Miscellaneous/` once
+the Gen3 sources are installed, and those fail on their own imports.
 
 ## Running the benchmark
 
@@ -149,7 +261,7 @@ accepted DYRK1A actives plus property-matched decoys, docks it, and writes the
 labelled enrichment report that tests the harness itself.
 
 ```bash
-python -m src.harness.build_cohort results/VALIDATION_RUN_NAME --n-actives 10 --decoys-per-active 30 --seed 42
+python -m src.harness.build_cohort results/VALIDATION_RUN_NAME --n-actives 10 --decoys-per-active 500 --seed 42
 python -m src.harness.run_local results/VALIDATION_RUN_NAME --name VALIDATION_RUN_NAME --workers 4 --missing-policy error
 ```
 
@@ -243,15 +355,22 @@ and
 
 ## Status
 
-The pipeline is complete and has been exercised end to end on pilot runs; all
-four arms, the shared gate, the docking harness, and both analysis modes run to
-completion and produce their reports. Two campaigns remain outstanding: the
-registered harness-validation run against the pre-registered thresholds, and
-the registered four-arm generative comparison.
+Both registered campaigns are complete and are reported in full in the preprint.
 
-No benchmark result is reported here. Pilot and smoke runs existed only to
-prove plumbing; their numbers are not results, are not evidence about any arm,
-and are deliberately not cited in this document.
+The harness validation ran against the pre-registered thresholds: ROC AUC 0.658
+(95% CI [0.642, 0.673]) against a floor of 0.650, and EF₁% 3.12 (95% CI
+[2.21, 4.10]) against a floor of 5.00. The harness cleared one criterion and
+missed the other. The result is reported as registered; the thresholds were
+not revised afterwards.
+
+The registered four-arm comparison ran on 2026-11-14.
+
+A second negative cohort of 384 compounds with measured weak or absent DYRK1A
+potency was docked separately and is never blended with the property-matched
+decoys.
+
+Pilot and smoke runs existed only to prove plumbing; their numbers are not
+results and are not cited anywhere.
 
 ## Citation
 
